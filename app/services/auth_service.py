@@ -1,12 +1,12 @@
 from fastapi import HTTPException, status
 from app.core.database import supabase
 from app.core.security import get_password_hash, verify_password, create_access_token
-from app.schemas.user import UserRegister, UserLogin, Token
+from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, UserLogin, Token
 from app.schemas.enums import UserRole
 import uuid
 
 class AuthService:
-    def register_user(self, user_in: UserRegister):
+    def _create_base_user(self, user_in, role_enum: UserRole):
         # 1. Verificar si el usuario ya existe (usamos tabla 'user' singular)
         user_response = supabase.table("user").select("id").eq("email", user_in.correo).execute()
         
@@ -26,7 +26,7 @@ class AuthService:
             "password": hashed_password,
             "name": user_in.nombre,
             "lastname": user_in.apellido,
-            "birthday": user_in.fecha_de_nacimiento.isoformat(),
+            "birthday": str(user_in.fecha_de_nacimiento),
             "is_active": False,
             "is_deleted": False
         }
@@ -41,41 +41,45 @@ class AuthService:
         # 3. Insertar el mapeo de rol en 'user_roles'
         role_data = {
             "user_id": new_user_id,
-            "role": user_in.role.value,
+            "role": role_enum.value,
             "is_active": False
         }
         supabase.table("user_roles").insert(role_data).execute()
         
-        # 4. Insertar en la tabla de detalle específica según el rol
-        self._create_role_profile(new_user_id, user_in.role)
-        
-        return "El usuario ha sido creado exitosamente, pero debe esperar a ser verificado en el sistema para continuar."
+        return new_user_id
 
-    def _create_role_profile(self, user_id: int, role: UserRole):
-        """Crea el perfil inicial según el rol del usuario."""
-        if role == UserRole.ADMIN_SISTEMA:
-            supabase.table("system_administrator").insert({
-                "admin_id": user_id,
-                "level_privilege": 1 # Nivel básico por defecto
-            }).execute()
-            
-        elif role == UserRole.ADMIN_ESCUELA:
-            supabase.table("school_administrator").insert({
-                "user_id": user_id,
-                "status": 2 # Estado 'Inactivo/Pendiente' usualmente
-            }).execute()
-            
-        elif role == UserRole.DOCTOR:
-            supabase.table("doctor").insert({
-                "user_id": user_id
-            }).execute()
-            
-        elif role == UserRole.REPRESENTANTE:
-            supabase.table("parent").insert({
-                "user_id": user_id,
-                "is_active": False,
-                "is_deleted": False
-            }).execute()
+    def register_system_admin(self, user_in):
+        new_user_id = self._create_base_user(user_in, UserRole.ADMIN_SISTEMA)
+        
+        supabase.table("system_administrator").insert({
+            "admin_id": new_user_id,
+            "level_privilege": 1 # Nivel básico por defecto
+        }).execute()
+        
+        return "El administrador de sistema ha sido creado exitosamente, pero debe esperar a ser verificado para continuar."
+
+    def register_school_admin(self, user_in):
+        new_user_id = self._create_base_user(user_in, UserRole.ADMIN_ESCUELA)
+        
+        supabase.table("school_administrator").insert({
+            "user_id": new_user_id,
+            "school_id": user_in.school_id,
+            "administrative_position": user_in.administrative_position,
+            "status": 2 # Estado 'Inactivo/Pendiente' usualmente
+        }).execute()
+        
+        return "El administrador de escuela ha sido creado exitosamente, pero debe esperar a ser verificado para continuar."
+
+    def register_doctor(self, user_in):
+        new_user_id = self._create_base_user(user_in, UserRole.DOCTOR)
+        
+        supabase.table("doctor").insert({
+            "user_id": new_user_id,
+            "doc_license_number": user_in.doc_license_number,
+            "especially": user_in.especially
+        }).execute()
+        
+        return "El perfil de doctor ha sido creado exitosamente, pero debe esperar a ser verificado para continuar."
         
     def authenticate_user(self, user_in: UserLogin):
         user_response = supabase.table("user").select("*").eq("email", user_in.email).execute()
@@ -105,8 +109,16 @@ class AuthService:
                 detail="Credenciales incorrectas"
             )
             
+        # Obtener el rol del usuario
+        role_response = supabase.table("user_roles").select("role").eq("user_id", user["id"]).execute()
+        role = role_response.data[0]["role"] if role_response.data else "desconocido"
+        
         # Generar token
-        token_data = {"sub": str(user["id"])}
+        token_data = {
+            "sub": str(user["id"]),
+            "email": str(user["email"]),
+            "role": role
+        }
         access_token = create_access_token(data=token_data)
         
         return Token(access_token=access_token, token_type="bearer")
