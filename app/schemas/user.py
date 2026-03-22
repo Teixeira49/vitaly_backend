@@ -7,13 +7,30 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
-class UserRegister(BaseModel):
+class SystemAdminRegister(BaseModel):
     nombre: str
     apellido: str
     correo: EmailStr
     contraseña: str
     fecha_de_nacimiento: date
-    role: UserRole
+
+class SchoolAdminRegister(BaseModel):
+    nombre: str
+    apellido: str
+    correo: EmailStr
+    contraseña: str
+    fecha_de_nacimiento: date
+    school_id: int
+    administrative_position: str
+
+class DoctorRegister(BaseModel):
+    nombre: str
+    apellido: str
+    correo: EmailStr
+    contraseña: str
+    fecha_de_nacimiento: date
+    doc_license_number: int
+    especially: str
 
 class UserResponse(BaseModel):
     id: str
