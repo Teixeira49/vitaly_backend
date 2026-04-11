@@ -172,3 +172,13 @@ Thumbs.db
 
 # Agents
 .agents/
+
+# Project specific ignores
+supabase/
+test_users/
+.cursorrules
+hierarchy_views_dashboard.md
+hierarchy_views_frontend_high_level.md
+init_instructions.txt
+manual_verification_instructions.txt
+theme.json
