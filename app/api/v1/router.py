@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import auth, admin, admin_school, catalogs, school, academic_year, school_admin
+from app.api.v1.endpoints import auth, admin, admin_school, catalogs, school, academic_year, school_admin, parent
 
 api_router = APIRouter()
 
@@ -10,3 +10,4 @@ api_router.include_router(catalogs.router, prefix="/catalogs", tags=["Catálogos
 api_router.include_router(school.router, prefix="/schools", tags=["Escuelas Públicas"])
 api_router.include_router(academic_year.router, prefix="/academic-year", tags=["Año Académico"])
 api_router.include_router(school_admin.router, prefix="/school-admin", tags=["Administrador de Escuela"])
+api_router.include_router(parent.router, prefix="/parent", tags=["Representante"])

@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, UserLogin, Token
+from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, ParentRegister, UserLogin, Token
 from app.schemas.responses import APIResponse
 from app.services.auth_service import auth_service
 
@@ -30,6 +30,15 @@ def register_doctor(user_in: DoctorRegister):
     """
     msg = auth_service.register_doctor(user_in)
     return APIResponse(data=msg, message="Registro completado para doctor")
+
+@router.post("/register-parent", response_model=APIResponse[str])
+def register_parent(user_in: ParentRegister):
+    """
+    Register a new parent/representative. 
+    Requires identity_number and type_representative (Mother, Father, etc).
+    """
+    msg = auth_service.register_parent(user_in)
+    return APIResponse(data=msg, message="Registro completado para representante")
 
 @router.post("/login", response_model=APIResponse[Token])
 def login(user_in: UserLogin):

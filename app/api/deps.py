@@ -37,3 +37,12 @@ def get_current_admin_escuela(payload: dict = Depends(get_current_user_token)) -
             detail="No tienes los permisos suficientes para esta acción. Se requiere rol de admin_escuela."
         )
     return payload
+
+def get_current_representante(payload: dict = Depends(get_current_user_token)) -> dict:
+    role = payload.get("role")
+    if role != UserRole.REPRESENTANTE.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes los permisos suficientes para esta acción. Se requiere rol de representante."
+        )
+    return payload

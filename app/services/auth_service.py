@@ -1,7 +1,7 @@
 from fastapi import HTTPException, status
 from app.core.database import supabase
 from app.core.security import get_password_hash, verify_password, create_access_token
-from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, UserLogin, Token
+from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, ParentRegister, UserLogin, Token
 from app.schemas.enums import UserRole
 import uuid
 
@@ -19,6 +19,13 @@ class AuthService:
                 detail=f"El usuario ya existe bajo el rol: {role}"
             )
         
+        # 1.1 Validar documento de identidad obligatorio para representantes
+        if role_enum == UserRole.REPRESENTANTE and not getattr(user_in, "identity_number", None):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El número de identidad es obligatorio para completar el registro de representante."
+            )
+        
         # 2. Insertar en la tabla maestra 'user'
         hashed_password = get_password_hash(user_in.contraseña)
         user_data = {
@@ -26,6 +33,7 @@ class AuthService:
             "password": hashed_password,
             "name": user_in.nombre,
             "lastname": user_in.apellido,
+            "identity_number": getattr(user_in, "identity_number", None),
             "birthday": str(user_in.fecha_de_nacimiento),
             "is_active": False,
             "is_deleted": False
@@ -80,6 +88,30 @@ class AuthService:
         }).execute()
         
         return "El perfil de doctor ha sido creado exitosamente, pero debe esperar a ser verificado para continuar."
+
+    def register_parent(self, user_in: ParentRegister):
+        new_user_id = self._create_base_user(user_in, UserRole.REPRESENTANTE)
+        
+        supabase.table("parent").insert({
+            "user_id": new_user_id,
+            "occupation": user_in.occupation,
+            "type_representative": user_in.type_representative,
+            "is_active": False
+        }).execute()
+
+        # Vincular automáticamente con estudiantes autorizados
+        from app.services.parent_service import parent_service
+        link_result = parent_service.link_students_by_identity(
+            user_id=new_user_id,
+            identity_number=user_in.identity_number
+        )
+        
+        linked_count = len(link_result.get("linked_students", []))
+        msg = f"El perfil de representante ha sido creado exitosamente. Debe esperar la verificación del sistema."
+        if linked_count > 0:
+            msg += f" Se vincularon automáticamente {linked_count} estudiante(s)."
+        
+        return msg
         
     def authenticate_user(self, user_in: UserLogin):
         user_response = supabase.table("user").select("*").eq("email", user_in.email).execute()

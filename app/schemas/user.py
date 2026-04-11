@@ -32,6 +32,16 @@ class DoctorRegister(BaseModel):
     doc_license_number: int
     especially: str
 
+class ParentRegister(BaseModel):
+    nombre: str
+    apellido: str
+    correo: EmailStr
+    contraseña: str
+    fecha_de_nacimiento: date
+    identity_number: str
+    type_representative: str
+    occupation: Optional[str] = None
+
 class UserResponse(BaseModel):
     id: str
     email: str

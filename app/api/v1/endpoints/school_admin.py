@@ -79,3 +79,65 @@ def get_students_by_classroom(
         size=size
     )
     return APIResponse(data=result, message="Estudiantes del salón obtenidos exitosamente")
+
+
+# ──────────────────────────────────────────────────────────
+# GET - Detalle completo de un estudiante
+# ──────────────────────────────────────────────────────────
+
+@router.get("/students/{student_id}", response_model=APIResponse[dict])
+def get_student_detail(
+    student_id: int,
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Detalle completo de un estudiante para el administrador de escuela.
+
+    Incluye:
+    - **student**: Datos base del estudiante.
+    - **representatives**: Lista de representantes vinculados (con sus datos de usuario), o `null` si no tiene ninguno.
+    - **health_info**: Métricas de salud más recientes (peso, estatura, IMC, estado nutricional: `OPTIMO`, `OBESO`, `DESNUTRIDO`), o `null` si no hay registros.
+
+    Restringe el acceso sólo a estudiantes pertenecientes a la misma escuela del admin autenticado.
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.get_student_detail(user_id=user_id, student_id=student_id)
+    return APIResponse(data=result, message="Detalle del estudiante obtenido exitosamente")
+
+
+# ──────────────────────────────────────────────────────────
+# GET - Historial de métricas (peso/altura) de un estudiante
+# ──────────────────────────────────────────────────────────
+
+@router.get("/students/{student_id}/metrics", response_model=APIResponse[dict])
+def get_student_metrics_history(
+    student_id: int,
+    limit: int = Query(15, ge=1, le=200, description="Cantidad de registros a traer (más recientes primero). Por defecto: 15."),
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Historial de métricas corporales de un estudiante.
+
+    Retorna las últimas `limit` mediciones (por defecto 15) ordenadas de más reciente a más antigua,
+    separadas por tipo:
+
+    ```json
+    {
+      "peso":   [{"fecha": "...", "valor": 45.2}, ...],
+      "altura": [{"fecha": "...", "valor": 1.52}, ...]
+    }
+    ```
+
+    Si no hay métricas registradas, retorna `data: null` con status `200`.
+    Restringe el acceso sólo a estudiantes pertenecientes a la misma escuela del admin autenticado.
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.get_student_metrics_history(
+        user_id=user_id,
+        student_id=student_id,
+        limit=limit
+    )
+    message = "Historial de métricas obtenido exitosamente" if result else "El estudiante no tiene métricas registradas."
+    return APIResponse(data=result, message=message)

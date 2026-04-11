@@ -216,5 +216,197 @@ class SchoolAdminService:
             "size": size,
         }
 
+    # ──────────────────────────────────────────────────────────
+    # GET - Detalle completo de un estudiante
+    # ──────────────────────────────────────────────────────────
+
+    def get_student_detail(self, user_id: int, student_id: int) -> dict:
+        school_id = self._get_school_id_for_admin(user_id)
+
+        # 1. Verificar que el estudiante existe y no está eliminado
+        student_res = (
+            supabase.table("student")
+            .select("id, name, lastname, birthday, gender, blood_type, identity_number, is_active, is_deleted")
+            .eq("id", student_id)
+            .eq("is_deleted", False)
+            .execute()
+        )
+        if not student_res.data:
+            raise HTTPException(status_code=404, detail=f"No existe ningún estudiante activo con ID {student_id}.")
+        student = student_res.data[0]
+
+        # 2. Verificar aislamiento de tenant: el estudiante debe estar registrado en un salón de ESTA escuela
+        reg_res = (
+            supabase.table("classroom_registration")
+            .select("classroom_id")
+            .eq("student_id", student_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not reg_res.data:
+            raise HTTPException(
+                status_code=403,
+                detail="Este estudiante no está inscrito en ningún salón de tu escuela."
+            )
+        classroom_id = reg_res.data[0]["classroom_id"]
+        cr_res = (
+            supabase.table("classroom")
+            .select("school_id")
+            .eq("id", classroom_id)
+            .execute()
+        )
+        if not cr_res.data or cr_res.data[0]["school_id"] != school_id:
+            raise HTTPException(
+                status_code=403,
+                detail="No tienes permiso para visualizar a este estudiante: pertenece a otra escuela."
+            )
+
+        # 3. Representantes: student_representative → parent → user
+        sr_res = (
+            supabase.table("student_representative")
+            .select("parent_id")
+            .eq("student_id", student_id)
+            .eq("is_deleted", False)
+            .execute()
+        )
+        representatives = []
+        if sr_res.data:
+            parent_ids = [r["parent_id"] for r in sr_res.data]
+            for parent_id in parent_ids:
+                parent_res = (
+                    supabase.table("parent")
+                    .select("id, user_id, occupation, type_representative, is_active")
+                    .eq("id", parent_id)
+                    .eq("is_deleted", False)
+                    .execute()
+                )
+                if parent_res.data:
+                    parent = parent_res.data[0]
+                    # Traer datos básicos del user vinculado al representante
+                    user_res = (
+                        supabase.table("user")
+                        .select("id, name, lastname, email, gender, address")
+                        .eq("id", parent["user_id"])
+                        .eq("is_deleted", False)
+                        .execute()
+                    )
+                    parent["user_info"] = user_res.data[0] if user_res.data else None
+                    representatives.append(parent)
+
+        # 4. Información de salud (student_metrics)
+        health_info = None
+        metrics_res = (
+            supabase.table("student_metrics")
+            .select("height, weight, updated_at")
+            .eq("student_id", student_id)
+            .eq("is_deleted", False)
+            .eq("is_current", True)
+            .order("updated_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if metrics_res.data:
+            metric = metrics_res.data[0]
+            weight_kg: float = metric["weight"]
+            height_m: float = metric["height"]
+
+            if height_m and height_m > 0:
+                bmi = round(weight_kg / (height_m ** 2), 2)
+                if bmi < 18.5:
+                    nutritional_status = "DESNUTRIDO"
+                elif bmi <= 24.9:
+                    nutritional_status = "OPTIMO"
+                else:
+                    nutritional_status = "OBESO"
+
+                health_info = {
+                    "weight_kg": weight_kg,
+                    "height_m": height_m,
+                    "bmi": bmi,
+                    "nutritional_status": nutritional_status,
+                    "measured_at": metric.get("updated_at"),
+                }
+
+        return {
+            "student": student,
+            "representatives": representatives if representatives else None,
+            "health_info": health_info,
+        }
+
+    # ──────────────────────────────────────────────────────────
+    # GET - Historial de métricas de un estudiante
+    # ──────────────────────────────────────────────────────────
+
+    def get_student_metrics_history(self, user_id: int, student_id: int, limit: int) -> dict | None:
+        school_id = self._get_school_id_for_admin(user_id)
+
+        # 1. Verificar que el estudiante existe y no está eliminado
+        student_res = (
+            supabase.table("student")
+            .select("id")
+            .eq("id", student_id)
+            .eq("is_deleted", False)
+            .execute()
+        )
+        if not student_res.data:
+            raise HTTPException(status_code=404, detail=f"No existe ningún estudiante activo con ID {student_id}.")
+
+        # 2. Verificar aislamiento de tenant: el estudiante pertenece a la escuela del admin
+        reg_res = (
+            supabase.table("classroom_registration")
+            .select("classroom_id")
+            .eq("student_id", student_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not reg_res.data:
+            raise HTTPException(
+                status_code=403,
+                detail="Este estudiante no está inscrito en ningún salón de tu escuela."
+            )
+        classroom_id = reg_res.data[0]["classroom_id"]
+        cr_res = (
+            supabase.table("classroom")
+            .select("school_id")
+            .eq("id", classroom_id)
+            .execute()
+        )
+        if not cr_res.data or cr_res.data[0]["school_id"] != school_id:
+            raise HTTPException(
+                status_code=403,
+                detail="No tienes permiso para visualizar a este estudiante: pertenece a otra escuela."
+            )
+
+        # 3. Obtener historial de métricas ordenadas por fecha de registro (más recientes primero)
+        metrics_res = (
+            supabase.table("student_metrics")
+            .select("weight, height, updated_at")
+            .eq("student_id", student_id)
+            .eq("is_deleted", False)
+            .order("updated_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+
+        if not metrics_res.data:
+            return None
+
+        # 4. Formatear la salida en series de tiempo separadas para peso y altura
+        peso = []
+        altura = []
+        for m in metrics_res.data:
+            fecha = m.get("updated_at")
+            if m.get("weight") is not None:
+                peso.append({"fecha": fecha, "valor": m["weight"]})
+            if m.get("height") is not None:
+                altura.append({"fecha": fecha, "valor": m["height"]})
+
+        return {
+            "peso": peso if peso else [],
+            "altura": altura if altura else [],
+        }
+
 
 school_admin_service = SchoolAdminService()
