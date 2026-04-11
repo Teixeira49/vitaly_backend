@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="app/static/logo.png" alt="Vitaly Logo" width="300">
+</p>
+
 # 🏥 Vitaly Backend API
 
 ![Versión](https://img.shields.io/badge/version-0.4.0-blue)
