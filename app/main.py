@@ -18,7 +18,7 @@ settings = get_settings()
 
 app = FastAPI(
     title="Vitaly Backend API",
-    version="1.0.0",
+    version="0.4.0",
     docs_url=None,
     redoc_url=None,
     openapi_tags=tags_metadata
