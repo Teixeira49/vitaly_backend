@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="app/static/logo.png" alt="Vitaly Logo" width="300">
+  <img src="app/static/logo_full.png" alt="Vitaly Logo" width="400" style="background-color: white; border-radius: 12px; padding: 20px;">
 </p>
 
 # 🏥 Vitaly Backend API
