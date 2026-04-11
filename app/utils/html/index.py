@@ -185,7 +185,7 @@ ROOT_HTML = """
         </div>
 
         <div class="footer">
-            Vitaly API v1.0.0 &bull; 2024 &bull; Designed for Health
+            Vitaly API v0.4.0 &bull; 2024 &bull; Designed for Health
         </div>
     </div>
 </body>
