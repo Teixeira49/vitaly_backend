@@ -141,3 +141,161 @@ def get_student_metrics_history(
     )
     message = "Historial de métricas obtenido exitosamente" if result else "El estudiante no tiene métricas registradas."
     return APIResponse(data=result, message=message)
+
+
+# ──────────────────────────────────────────────────────────
+# GET - Casos médicos de los estudiantes (Paginado)
+# ──────────────────────────────────────────────────────────
+
+@router.get("/medical-cases", response_model=APIResponse[dict])
+def get_medical_cases(
+    page: int = Query(1, ge=1, description="Número de página"),
+    size: int = Query(20, ge=1, le=100, description="Elementos por página"),
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Lista paginada de los casos médicos asociados a los estudiantes de la escuela.
+    
+    Campos devueltos por caso:
+    - id
+    - status ('activo' si end_date es nulo, 'resuelto' caso contrario)
+    - start_date (fecha de inicio)
+    - student_name (nombre y apellido concatenado)
+    - type_of_case
+    - description (symptomatology)
+    
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.get_medical_cases(
+        user_id=user_id,
+        page=page,
+        size=size
+    )
+    return APIResponse(data=result, message="Casos médicos obtenidos exitosamente")
+
+
+# ──────────────────────────────────────────────────────────
+# GET - Detalle de un caso médico específico
+# ──────────────────────────────────────────────────────────
+
+@router.get("/medical-cases/{case_id}", response_model=APIResponse[dict])
+def get_medical_case_detail(
+    case_id: int,
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Retorna el detalle completo de un caso médico junto con los datos del estudiante 
+    involucrado y de sus representantes (padres).
+    
+    Verifica que el caso médico corresponda a un estudiante inscrito en una clase 
+    perteneciente a la escuela del administrador.
+    
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.get_medical_case_detail(
+        user_id=user_id,
+        case_id=case_id
+    )
+    return APIResponse(data=result, message="Detalle del caso médico obtenido exitosamente")
+
+
+# ──────────────────────────────────────────────────────────
+# GET - Doctores de la escuela (Paginado)
+# ──────────────────────────────────────────────────────────
+
+@router.get("/doctors", response_model=APIResponse[dict])
+def get_doctors(
+    page: int = Query(1, ge=1, description="Número de página"),
+    size: int = Query(20, ge=1, le=100, description="Elementos por página"),
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Lista paginada de los médicos (doctores) asociados a la escuela.
+    
+    Campos devueltos por doctor:
+    - name (nombre y apellido concatenado, prefijado con Dr. o Dra. según género)
+    - specialty (especialidad médica)
+    - medical_license (número de licencia médica)
+    - status (estado del médico respecto a la escuela, ej. Activo/Inactivo)
+    
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.get_doctors(
+        user_id=user_id,
+        page=page,
+        size=size
+    )
+    return APIResponse(data=result, message="Lista de doctores obtenida exitosamente")
+
+
+# ──────────────────────────────────────────────────────────
+# GET - Detalle de un Representante y sus Hijos
+# ──────────────────────────────────────────────────────────
+
+@router.get("/representatives/{parent_id}", response_model=APIResponse[dict])
+def get_parent_detail(
+    parent_id: int,
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Lista el detalle de un representante junto con un conteo y lista de todos sus hijos asociados.
+    
+    Verifica que al menos uno de los estudiantes pertenezca a la escuela administrada por el token
+    proporcionado, en caso contrario retorna error 403 de acceso denegado.
+    
+    Campos devueltos por hijo (children):
+    - id
+    - name (nombre y apellido concatenado)
+    - birthday
+    - current_grade (grado actual concatenado con el listado)
+    - bmi_status (DESNUTRIDO, OPTIMO, OBESO, SIN DATOS)
+    - has_active_medical_case (boolean)
+    
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.get_parent_detail(
+        user_id=user_id,
+        parent_id=parent_id
+    )
+    return APIResponse(data=result, message="Detalle del representante obtenido exitosamente")
+
+
+# ──────────────────────────────────────────────────────────
+# GET - Historial médico de un estudiante específico (Paginado)
+# ──────────────────────────────────────────────────────────
+
+@router.get("/students/{student_id}/medical-history", response_model=APIResponse[dict])
+def get_student_medical_history(
+    student_id: int,
+    page: int = Query(1, ge=1, description="Número de página"),
+    size: int = Query(20, ge=1, le=100, description="Elementos por página"),
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Lista paginada del historial médico (casos médicos) de un estudiante específico.
+    
+    Verifica que el estudiante pertenezca a la escuela administrada por el token
+    proporcionado, en caso contrario retorna error 403 de acceso denegado.
+    
+    Campos devueltos por caso médico:
+    - id
+    - start_date (fecha de inicio)
+    - type_of_case (tipo de caso)
+    - is_active (boolean que indica si sigue activo determinando si end_date es nulo)
+    - title
+    - description (symptomatology)
+    
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.get_student_medical_history(
+        user_id=user_id,
+        student_id=student_id,
+        page=page,
+        size=size
+    )
+    return APIResponse(data=result, message="Historial médico obtenido exitosamente")
