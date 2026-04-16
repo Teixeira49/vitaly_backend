@@ -3,9 +3,31 @@ from typing import List
 
 from app.api.deps import get_current_admin_escuela
 from app.schemas.responses import APIResponse
+from app.schemas.student import StudentUpdateSchoolAdmin
 from app.services.school_admin_service import school_admin_service
 
 router = APIRouter()
+
+
+# ──────────────────────────────────────────────────────────
+# GET - Mi Perfil de Administrador
+# ──────────────────────────────────────────────────────────
+
+@router.get("/profile", response_model=APIResponse[dict])
+def get_my_profile(
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Retorna el perfil del administrador de escuela autenticado.
+    
+    Incluye la información del usuario, la información del administrador 
+    y datos básicos de la escuela a la que pertenece (nombre, año de fundación y dirección).
+    
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.get_my_profile(user_id=user_id)
+    return APIResponse(data=result, message="Perfil obtenido exitosamente")
 
 
 # ──────────────────────────────────────────────────────────
@@ -299,3 +321,122 @@ def get_student_medical_history(
         size=size
     )
     return APIResponse(data=result, message="Historial médico obtenido exitosamente")
+
+
+# ──────────────────────────────────────────────────────────
+# PUT - Actualizar perfil del estudiante (incluyendo representante)
+# ──────────────────────────────────────────────────────────
+
+@router.put("/students/{student_id}", response_model=APIResponse[dict])
+def update_student_profile(
+    student_id: int,
+    payload: StudentUpdateSchoolAdmin,
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Actualiza el perfil de un estudiante. Los campos opcionales permitidos son:
+    - name
+    - lastname
+    - identity_number
+    - gender
+    - blood_type
+    - birthday
+    - representative_id (Reemplaza al padre actual en la tabla student_representative)
+    
+    Verifica de antemano que el estudiante se encuentre validado en un salón
+    perteneciente a la escuela administrada por el usuario en sesión.
+    
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.update_student_profile(
+        user_id=user_id,
+        student_id=student_id,
+        payload=payload.model_dump(exclude_unset=True)
+    )
+    return APIResponse(data=result, message="Perfil del estudiante y representante actualizados exitosamente")
+
+
+# ──────────────────────────────────────────────────────────
+# GET - Búsqueda global de Representantes (Paginado)
+# ──────────────────────────────────────────────────────────
+
+@router.get("/search/representatives", response_model=APIResponse[dict])
+def search_representatives(
+    query: str = Query(..., min_length=1, description="Nombre o Apellido del representante"),
+    page: int = Query(1, ge=1, description="Número de página"),
+    size: int = Query(20, ge=1, le=100, description="Elementos por página"),
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Buscador global de representantes basado en coincidencias parciales ILIKE de nombre o apellido.
+    
+    Usado principalmente para ubicar rápidamente el ID de un representante y re-asignarlo empleando 
+    la edición de perfil estudiantil.
+    
+    Campos devueltos por representante:
+    - email
+    - name
+    - lastname
+    - representative_id (el necesario para update)
+    - user_id
+    - ocupation
+    
+    Requiere JWT (admin_escuela).
+    """
+    result = school_admin_service.search_representatives(
+        query=query,
+        page=page,
+        size=size
+    )
+    return APIResponse(data=result, message="Búsqueda completada exitosamente")
+
+
+# ──────────────────────────────────────────────────────────
+# PATCH - Activar Estudiante
+# ──────────────────────────────────────────────────────────
+
+@router.patch("/students/{student_id}/activate", response_model=APIResponse[dict])
+def activate_student(
+    student_id: int,
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Activa a un estudiante previamente desactivado.
+    
+    Verifica de antemano que el estudiante se encuentre validado en un salón
+    perteneciente a la escuela administrada por el usuario en sesión.
+    
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.activate_student(
+        user_id=user_id,
+        student_id=student_id
+    )
+    return APIResponse(data=result, message="Estudiante activado exitosamente")
+
+
+# ──────────────────────────────────────────────────────────
+# PATCH - Desactivar Estudiante
+# ──────────────────────────────────────────────────────────
+
+@router.patch("/students/{student_id}/deactivate", response_model=APIResponse[dict])
+def deactivate_student(
+    student_id: int,
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Desactiva a un estudiante activo.
+    
+    Verifica de antemano que el estudiante se encuentre validado en un salón
+    perteneciente a la escuela administrada por el usuario en sesión.
+    
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.deactivate_student(
+        user_id=user_id,
+        student_id=student_id
+    )
+    return APIResponse(data=result, message="Estudiante desactivado exitosamente")

@@ -20,6 +20,37 @@ class SchoolAdminService:
         return sa_response.data[0]["school_id"]
 
     # ──────────────────────────────────────────────────────────
+    # GET - Mi Perfil
+    # ──────────────────────────────────────────────────────────
+
+    def get_my_profile(self, user_id: int) -> dict:
+        admin_res = (
+            supabase.table("school_administrator")
+            .select("*, user(*), school(*)")
+            .eq("user_id", user_id)
+            .execute()
+        )
+        if not admin_res.data:
+            raise HTTPException(status_code=404, detail="Perfil de administrador no encontrado.")
+            
+        admin_data = admin_res.data[0]
+        user_info = admin_data.pop("user", {}) or {}
+        school_info = admin_data.pop("school", {}) or {}
+        
+        if "password" in user_info:
+            del user_info["password"]
+            
+        return {
+            "user_info": user_info,
+            "admin_info": admin_data,
+            "school_info": {
+                "name": school_info.get("name"),
+                "year_foundation": school_info.get("year_foundation"),
+                "address": school_info.get("address")
+            }
+        }
+
+    # ──────────────────────────────────────────────────────────
     # GET - Students Resume (Métricas)
     # ──────────────────────────────────────────────────────────
 
@@ -56,23 +87,49 @@ class SchoolAdminService:
         student_ids = list({r["student_id"] for r in regs_res.data}) if regs_res.data else []
         total_students = len(student_ids)
 
-        # ── SOBREPESO ──────────────────────────────────────────
-        # TODO: Implementar lógica de detección de sobrepeso usando la tabla
-        # `student_metrics` (campos: height, weight, is_current) para calcular
-        # el IMC de cada estudiante y compararlo con los rangos pediátricos estándar.
-        overweight_students = 0
+        if not student_ids:
+            return {
+                "total_students": 0,
+                "overweight_students": 0,
+                "malnourished_students": 0,
+                "active_cases": 0,
+                "optimal_students": 0,
+            }
 
-        # ── DESNUTRICIÓN ───────────────────────────────────────
-        # TODO: Implementar lógica de detección de desnutrición usando la tabla
-        # `student_metrics` (campos: height, weight, is_current) para calcular
-        # el IMC de cada estudiante y compararlo con los umbrales de desnutrición.
+        # ── SOBREPESO Y DESNUTRICIÓN (Basado en IMC) ───────────
+        metrics_res = (
+            supabase.table("student_metrics")
+            .select("student_id, height, weight")
+            .in_("student_id", student_ids)
+            .eq("is_current", True)
+            .eq("is_deleted", False)
+            .execute()
+        )
+        
+        overweight_students = 0
         malnourished_students = 0
+        
+        if metrics_res.data:
+            for m in metrics_res.data:
+                height = m.get("height")
+                weight = m.get("weight")
+                if height and weight and height > 0:
+                    bmi = weight / (height ** 2)
+                    if bmi < 18.5:
+                        malnourished_students += 1
+                    elif bmi > 24.9:
+                        overweight_students += 1
 
         # ── CASOS ACTIVOS ──────────────────────────────────────
-        # TODO: Implementar lógica para contar casos médicos activos desde la
-        # tabla `medical_case`, filtrando por student_id de esta escuela donde
-        # `end_date` IS NULL o is_deleted = false y aún no tiene fecha de cierre.
-        active_cases = 0
+        cases_res = (
+            supabase.table("medical_case")
+            .select("id")
+            .in_("student_id", student_ids)
+            .is_("end_date", "null")
+            .eq("is_deleted", False)
+            .execute()
+        )
+        active_cases = len(cases_res.data) if cases_res.data else 0
 
         optimal_students = total_students - overweight_students - malnourished_students
 
@@ -850,5 +907,258 @@ class SchoolAdminService:
             "page": page,
             "size": size,
         }
+
+    # ──────────────────────────────────────────────────────────
+    # PUT - Actualizar perfil del estudiante (incluyendo representante)
+    # ──────────────────────────────────────────────────────────
+
+    def update_student_profile(self, user_id: int, student_id: int, payload: dict) -> dict:
+        school_id = self._get_school_id_for_admin(user_id)
+        
+        # 1. Validar permiso (si el estudiante está en su escuela)
+        classrooms_res = (
+            supabase.table("classroom")
+            .select("id")
+            .eq("school_id", school_id)
+            .eq("is_deleted", False)
+            .execute()
+        )
+        classroom_ids = [c["id"] for c in classrooms_res.data] if classrooms_res.data else []
+        
+        regs_res = (
+            supabase.table("classroom_registration")
+            .select("id")
+            .eq("student_id", student_id)
+            .in_("classroom_id", classroom_ids)
+            .execute()
+        )
+        if not regs_res.data:
+            raise HTTPException(
+                status_code=403,
+                detail=f"No tiene permisos para modificar al estudiante {student_id} porque no está en su escuela."
+            )
+
+        # 2. Separar el id del representante del resto de los datos del estudiante
+        rep_id = payload.pop("representative_id", None)
+        
+        # 3. Actualizar información del estudiante en la base de datos
+        if payload:
+            format_payload = {}
+            for key, val in payload.items():
+                if hasattr(val, 'value'):
+                    # Caso de Enums (Gender, BloodType)
+                    format_payload[key] = val.value
+                elif key == "birthday" and val is not None:
+                    # En caso de la fecha, parsear a string si viene como objeto date
+                    format_payload[key] = val.isoformat() if hasattr(val, 'isoformat') else val
+                elif val is not None:
+                    format_payload[key] = val
+
+            if format_payload:
+                upd_res = (
+                    supabase.table("student")
+                    .update(format_payload)
+                    .eq("id", student_id)
+                    .execute()
+                )
+
+        # 4. Actualizar el representante del estudiante si se provee
+        if rep_id is not None:
+            parent_res = supabase.table("parent").select("id").eq("id", rep_id).execute()
+            if not parent_res.data:
+                raise HTTPException(status_code=400, detail="El identificador del representante(parent_id) provisto no existe.")
+                
+            curr_rep_res = (
+                supabase.table("student_representative")
+                .select("id")
+                .eq("student_id", student_id)
+                .eq("is_deleted", False)
+                .execute()
+            )
+            
+            if curr_rep_res.data:
+                # Modificamos la relación actual
+                (
+                    supabase.table("student_representative")
+                    .update({"parent_id": rep_id})
+                    .eq("id", curr_rep_res.data[0]["id"])
+                    .execute()
+                )
+            else:
+                # Si no tenía representate, creamos una nueva
+                (
+                    supabase.table("student_representative")
+                    .insert({"student_id": student_id, "parent_id": rep_id})
+                    .execute()
+                )
+
+        return {"student_id": student_id, "updated": True}
+
+    # ──────────────────────────────────────────────────────────
+    # GET - Buscador de Representantes
+    # ──────────────────────────────────────────────────────────
+
+    def search_representatives(self, query: str, page: int, size: int) -> dict:
+        if not query or not query.strip():
+            return {"data": [], "total": 0, "page": page, "size": size}
+
+        # 1. Buscar de forma flexible en la tabla user
+        u_query = supabase.table("user").select("id, name, lastname, email").eq("is_deleted", False)
+        
+        parts = query.strip().split()
+        if len(parts) == 1:
+            term = f"%{parts[0]}%"
+            u_query = u_query.or_(f"name.ilike.{term},lastname.ilike.{term}")
+        else:
+            first = f"%{parts[0]}%"
+            last = f"%{' '.join(parts[1:])}%"
+            u_query = u_query.ilike("name", first).ilike("lastname", last)
+            
+        u_res = u_query.execute()
+        
+        if not u_res.data:
+            return {"data": [], "total": 0, "page": page, "size": size}
+            
+        user_ids = [u["id"] for u in u_res.data]
+        users_map = {u["id"]: u for u in u_res.data}
+
+        # 2. Contar resultados reales que sí sean parent (representantes)
+        count_res = (
+            supabase.table("parent")
+            .select("id", count="exact")
+            .in_("user_id", user_ids)
+            .eq("is_deleted", False)
+            .execute()
+        )
+        total = count_res.count or 0
+        if total == 0:
+            return {"data": [], "total": 0, "page": page, "size": size}
+
+        # 3. Obtener padres paginados
+        offset = (page - 1) * size
+        p_res = (
+            supabase.table("parent")
+            .select("id, ocupation, user_id")
+            .in_("user_id", user_ids)
+            .eq("is_deleted", False)
+            .range(offset, offset + size - 1)
+            .execute()
+        )
+
+        # 4. Formatear la lista solicitada
+        formatted_list = []
+        for parent in p_res.data:
+            user_info = users_map.get(parent["user_id"], {})
+            formatted_list.append({
+                "representative_id": parent["id"],
+                "user_id": parent["user_id"],
+                "name": user_info.get("name", ""),
+                "lastname": user_info.get("lastname", ""),
+                "email": user_info.get("email", ""),
+                "ocupation": parent.get("ocupation")
+            })
+
+        return {
+            "data": formatted_list,
+            "total": total,
+            "page": page,
+            "size": size,
+        }
+
+    # ──────────────────────────────────────────────────────────
+    # PATCH - Activar / Desactivar Estudiante
+    # ──────────────────────────────────────────────────────────
+
+    def activate_student(self, user_id: int, student_id: int) -> dict:
+        school_id = self._get_school_id_for_admin(user_id)
+        
+        # 1. Verificar si existe el estudiante
+        student_res = supabase.table("student").select("id, is_active, is_deleted").eq("id", student_id).execute()
+        if not student_res.data:
+            raise HTTPException(status_code=404, detail="Estudiante no encontrado.")
+        if student_res.data[0].get("is_deleted"):
+            raise HTTPException(status_code=400, detail="No se puede activar a un estudiante eliminado.")
+            
+        # 2. Verificar aislamiento de tenant
+        reg_res = (
+            supabase.table("classroom_registration")
+            .select("classroom_id")
+            .eq("student_id", student_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not reg_res.data:
+            raise HTTPException(
+                status_code=403,
+                detail="Este estudiante no está inscrito en ningún salón de tu escuela."
+            )
+        classroom_id = reg_res.data[0]["classroom_id"]
+        cr_res = (
+            supabase.table("classroom")
+            .select("school_id")
+            .eq("id", classroom_id)
+            .execute()
+        )
+        if not cr_res.data or cr_res.data[0]["school_id"] != school_id:
+            raise HTTPException(
+                status_code=403,
+                detail="No tienes permiso para modificar a este estudiante: pertenece a otra escuela."
+            )
+        
+        # 3. Actualizar estado
+        update_res = (
+            supabase.table("student")
+            .update({"is_active": True})
+            .eq("id", student_id)
+            .execute()
+        )
+        return update_res.data[0] if update_res.data else {}
+
+    def deactivate_student(self, user_id: int, student_id: int) -> dict:
+        school_id = self._get_school_id_for_admin(user_id)
+        
+        # 1. Verificar si existe el estudiante
+        student_res = supabase.table("student").select("id, is_active, is_deleted").eq("id", student_id).execute()
+        if not student_res.data:
+            raise HTTPException(status_code=404, detail="Estudiante no encontrado.")
+        if student_res.data[0].get("is_deleted"):
+            raise HTTPException(status_code=400, detail="No se puede modificar un estudiante eliminado.")
+            
+        # 2. Verificar aislamiento de tenant
+        reg_res = (
+            supabase.table("classroom_registration")
+            .select("classroom_id")
+            .eq("student_id", student_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not reg_res.data:
+            raise HTTPException(
+                status_code=403,
+                detail="Este estudiante no está inscrito en ningún salón de tu escuela."
+            )
+        classroom_id = reg_res.data[0]["classroom_id"]
+        cr_res = (
+            supabase.table("classroom")
+            .select("school_id")
+            .eq("id", classroom_id)
+            .execute()
+        )
+        if not cr_res.data or cr_res.data[0]["school_id"] != school_id:
+            raise HTTPException(
+                status_code=403,
+                detail="No tienes permiso para modificar a este estudiante: pertenece a otra escuela."
+            )
+        
+        # 3. Actualizar estado
+        update_res = (
+            supabase.table("student")
+            .update({"is_active": False})
+            .eq("id", student_id)
+            .execute()
+        )
+        return update_res.data[0] if update_res.data else {}
 
 school_admin_service = SchoolAdminService()
