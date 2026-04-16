@@ -69,3 +69,7 @@ class BulkClassroomRegistrationCreate(BaseModel):
     academic_year_id: int
     classroom_id: int
     status_id: Optional[int] = 2
+
+class StudentUpdateSchoolAdmin(StudentUpdate):
+    """Campos extra para la actualización del estudiante por parte de un administrador escolar."""
+    representative_id: Optional[int] = None
