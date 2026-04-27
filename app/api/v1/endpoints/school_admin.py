@@ -1,5 +1,6 @@
+from datetime import date
 from fastapi import APIRouter, Depends, Query
-from typing import List
+from typing import List, Optional
 
 from app.api.deps import get_current_admin_escuela
 from app.schemas.responses import APIResponse
@@ -36,23 +37,73 @@ def get_my_profile(
 
 @router.get("/students/resume", response_model=APIResponse[dict])
 def get_students_resume(
+    category: int = Query(None, description="ID de la categoría del aula (ej. 1=PREESCOLAR). Filtra el resumen por categoría."),
+    grade: int = Query(None, description="Nivel/grado del aula. Requiere 'category'."),
+    section: str = Query(None, description="Letra de la sección (ej. 'A'). Requiere 'category' y 'grade'."),
     admin_payload: dict = Depends(get_current_admin_escuela)
 ):
     """
-    Resumen métrico de los estudiantes pertenecientes a la escuela del admin autenticado.
+    Resumen métrico de los estudiantes pertenecientes a la escuela del admin autenticado,
+    correspondientes al año académico vigente.
 
-    Métricas:
-    - **total_students**: Número total de estudiantes vinculados a la escuela.
-    - **overweight_students**: (Hardcodeado a 0) Estudiantes con sobrepeso.
-    - **malnourished_students**: (Hardcodeado a 0) Estudiantes con desnutrición.
-    - **active_cases**: (Hardcodeado a 0) Casos médicos activos.
-    - **optimal_students**: total_students - overweight - malnourished.
+    **Filtros opcionales (jerárquicos):**
+    - **category**: Filtra por categoría de aula (classroom_category). Ej: 1=PREESCOLAR.
+    - **grade**: Filtra por nivel/grado. *Requiere `category`.*
+    - **section**: Filtra por sección (letra). *Requiere `category` y `grade`.*
+
+    **Métricas:**
+    - `total_students`: Número total de estudiantes en el alcance seleccionado.
+    - `overweight_students`: Estudiantes con BMI > 24.9.
+    - `malnourished_students`: Estudiantes con BMI < 18.5.
+    - `active_cases`: Casos médicos activos (sin fecha de cierre ni diagnóstico final).
+    - `optimal_students`: total_students - overweight - malnourished.
 
     Requiere JWT (admin_escuela).
     """
     user_id = int(admin_payload["sub"])
-    result = school_admin_service.get_students_resume(user_id=user_id)
+    result = school_admin_service.get_students_resume(
+        user_id=user_id,
+        category=category,
+        grade=grade,
+        section=section,
+    )
     return APIResponse(data=result, message="Resumen de estudiantes obtenido exitosamente")
+
+
+# ──────────────────────────────────────────────────────────
+# GET - Tendencia de casos médicos (mensual / semanal)
+# ──────────────────────────────────────────────────────────
+
+@router.get("/students/medical-cases-tendency", response_model=APIResponse[dict])
+def get_medical_cases_tendency(
+    mode: str = Query("monthly", description="Modo de agrupación: 'monthly' o 'weekly'"),
+    months: int = Query(3, ge=1, le=24, description="Meses hacia atrás a analizar (modo monthly)"),
+    weeks: int = Query(12, ge=1, le=52, description="Semanas hacia atrás a analizar (modo weekly)"),
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Tendencia de nuevos casos médicos en el tiempo para los estudiantes de la escuela.
+
+    - **mode=monthly** (default): agrupa por mes, analiza los últimos `months` meses (default 3).
+    - **mode=weekly**: agrupa por semana ISO, analiza las últimas `weeks` semanas (default 12).
+
+    Retorna:
+    - `summary.total_incidents`: total de casos en el período.
+    - `summary.growth_rate`: % de crecimiento respecto al período inmediatamente anterior de igual duración.
+    - `data[].label`: nombre del mes (Ene, Feb…) o número de semana (Sem 15…).
+    - `data[].value`: cantidad de casos en ese período.
+    - `data[].trend`: valor de la línea de tendencia lineal (regresión y = mx + b).
+
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.get_medical_cases_tendency(
+        user_id=user_id,
+        mode=mode,
+        months=months,
+        weeks=weeks,
+    )
+    return APIResponse(data=result, message="Tendencia de casos médicos obtenida exitosamente")
 
 
 # ──────────────────────────────────────────────────────────
@@ -195,6 +246,67 @@ def get_medical_cases(
         size=size
     )
     return APIResponse(data=result, message="Casos médicos obtenidos exitosamente")
+
+
+
+# ──────────────────────────────────────────────────────────
+# GET - Búsqueda / Filtrado de casos médicos (con filtros)
+# ──────────────────────────────────────────────────────────
+
+@router.get("/medical-cases/search", response_model=APIResponse[dict])
+def search_medical_cases(
+    status: Optional[str] = Query(
+        None,
+        description="Estado del caso: 'activo' o 'resuelto'. "
+                    "Resuelto = end_date y final_diagnosis no nulos. "
+                    "Si se omite, se devuelven todos los casos.",
+    ),
+    type_of_case: Optional[str] = Query(
+        None,
+        description="Tipo de caso: ALERGIA | LESION | ENFERMEDAD | EMERGENCIA. "
+                    "Si se omite, se devuelven todos los tipos.",
+    ),
+    date_from: Optional[date] = Query(
+        None,
+        description="Fecha de inicio mínima (init_date >= date_from). Formato: YYYY-MM-DD.",
+    ),
+    date_to: Optional[date] = Query(
+        None,
+        description="Fecha de inicio máxima (init_date <= date_to). Formato: YYYY-MM-DD.",
+    ),
+    page: int = Query(1, ge=1, description="Número de página (empieza en 1)."),
+    size: int = Query(20, ge=1, le=100, description="Elementos por página (máximo 100)."),
+    admin_payload: dict = Depends(get_current_admin_escuela),
+):
+    """
+    Búsqueda paginada de casos médicos de la escuela con filtros opcionales e independientes.
+
+    **Filtros disponibles:**
+    - **status**: `activo` (end_date o final_diagnosis es nulo) / `resuelto` (ambos no nulos).
+    - **type_of_case**: `ALERGIA`, `LESION`, `ENFERMEDAD` o `EMERGENCIA`.
+    - **date_from**: Filtra casos cuya fecha de inicio sea ≥ a este valor.
+    - **date_to**: Filtra casos cuya fecha de inicio sea ≤ a este valor.
+    - Se puede usar `date_from` sin `date_to` y viceversa.
+
+    **Cada caso en la respuesta incluye:**
+    - `id`, `status`, `start_date`, `student_name`, `type_of_case`, `description`
+
+    Solo se devuelven casos no eliminados (`is_deleted = false`) de estudiantes
+    pertenecientes a la escuela administrada por el usuario autenticado.
+
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.search_medical_cases(
+        user_id=user_id,
+        page=page,
+        size=size,
+        status=status,
+        type_of_case=type_of_case,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return APIResponse(data=result, message="Búsqueda de casos médicos completada exitosamente")
 
 
 # ──────────────────────────────────────────────────────────
@@ -440,3 +552,78 @@ def deactivate_student(
         student_id=student_id
     )
     return APIResponse(data=result, message="Estudiante desactivado exitosamente")
+
+
+# ──────────────────────────────────────────────────────────
+# GET - Resumen de categorías/niveles del año académico vigente
+# ──────────────────────────────────────────────────────────
+
+@router.get("/classrooms/categories-summary", response_model=APIResponse[dict])
+def get_classroom_categories_summary(
+    category_id: int = Query(None, description="ID de la categoría para filtrar los niveles (opcional)."),
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Retorna las combinaciones únicas de (level, classroom_category_id, classroom_type_name)
+    presentes en los salones de la escuela para el año académico vigente.
+
+    Si se proporciona `category_id`, el resultado se filtrará para devolver únicamente 
+    los niveles correspondientes a esa categoría específica.
+
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.get_classroom_categories_summary(
+        user_id=user_id,
+        category_id=category_id
+    )
+    return APIResponse(data=result, message="Resumen de categorías obtenido exitosamente")
+
+
+# ──────────────────────────────────────────────────────────
+# GET - Lista simple de categorías disponibles para la escuela
+# ──────────────────────────────────────────────────────────
+
+@router.get("/classrooms/categories-available", response_model=APIResponse[dict])
+def get_available_classroom_categories(
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Retorna la lista única de categorías (PREESCOLAR, PRIMARIA, etc.) disponibles 
+    en la escuela para el año académico vigente.
+    
+    A diferencia de /categories-summary, este endpoint no incluye los niveles (grados),
+    solo las categorías principales.
+
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.get_available_classroom_categories(user_id=user_id)
+    return APIResponse(data=result, message="Categorías disponibles obtenidas exitosamente")
+
+
+# ──────────────────────────────────────────────────────────
+# GET - Secciones disponibles para una categoría y nivel dados
+# ──────────────────────────────────────────────────────────
+
+@router.get("/classrooms/categories/{category_id}/levels/{level}/sections", response_model=APIResponse[dict])
+def get_sections_by_category_and_level(
+    category_id: int,
+    level: int,
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Retorna las secciones disponibles en el año académico vigente para una combinación
+    específica de classroom_category (category_id) y level.
+
+    Ejemplo: category_id=1, level=3 → secciones A, B, C disponibles.
+
+    Requiere JWT (admin_escuela).
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.get_sections_by_category_and_level(
+        user_id=user_id,
+        category_id=category_id,
+        level=level
+    )
+    return APIResponse(data=result, message="Secciones obtenidas exitosamente")

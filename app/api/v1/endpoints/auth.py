@@ -1,7 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from fastapi.security import HTTPAuthorizationCredentials
 from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, ParentRegister, UserLogin, Token
 from app.schemas.responses import APIResponse
 from app.services.auth_service import auth_service
+from app.api.deps import get_current_user_token, security
 
 router = APIRouter()
 
@@ -47,3 +49,16 @@ def login(user_in: UserLogin):
     """
     token_response = auth_service.authenticate_user(user_in)
     return APIResponse(data=token_response, message="Login exitoso")
+
+@router.post("/logout", response_model=APIResponse[str])
+def logout(
+    payload: dict = Depends(get_current_user_token),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    Logout endpoint. Revokes the current access token.
+    """
+    token = credentials.credentials
+    expires_at = payload.get("exp")
+    auth_service.revoke_token(token, expires_at)
+    return APIResponse(data="Logout exitoso", message="Sesión cerrada correctamente")

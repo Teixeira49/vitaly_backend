@@ -4,6 +4,7 @@ from app.core.security import get_password_hash, verify_password, create_access_
 from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, ParentRegister, UserLogin, Token
 from app.schemas.enums import UserRole
 import uuid
+from datetime import datetime
 
 class AuthService:
     def _create_base_user(self, user_in, role_enum: UserRole):
@@ -149,10 +150,50 @@ class AuthService:
         token_data = {
             "sub": str(user["id"]),
             "email": str(user["email"]),
-            "role": role
+            "role": role,
+            "name": f"{user.get('name', '')} {user.get('lastname', '')}".strip(),
+            "gender": user.get("gender") if user.get("gender") is not None else ""
         }
+
+        if role == UserRole.DOCTOR.value:
+            doctor_res = supabase.table("doctor").select("especially, doc_license_number").eq("user_id", user["id"]).execute()
+            if doctor_res.data:
+                token_data["especially"] = doctor_res.data[0].get("especially")
+                token_data["doc_license_number"] = doctor_res.data[0].get("doc_license_number")
+        elif role == UserRole.ADMIN_ESCUELA.value:
+            admin_res = supabase.table("school_administrator").select("administrative_position, school_id").eq("user_id", user["id"]).execute()
+            if admin_res.data:
+                token_data["administrative_position"] = admin_res.data[0].get("administrative_position")
+                school_id = admin_res.data[0].get("school_id")
+                if school_id:
+                    school_res = supabase.table("school").select("name").eq("sch_id", school_id).execute()
+                    if school_res.data:
+                        token_data["school"] = school_res.data[0].get("name")
+        elif role == UserRole.REPRESENTANTE.value:
+            parent_res = supabase.table("parent").select("type_representative").eq("user_id", user["id"]).execute()
+            if parent_res.data:
+                token_data["type_representative"] = parent_res.data[0].get("type_representative")
+
         access_token = create_access_token(data=token_data)
         
         return Token(access_token=access_token, token_type="bearer")
+
+    def revoke_token(self, token: str, expires_at: int):
+        """
+        Add a token to the blacklist.
+        'expires_at' should be the timestamp from the JWT 'exp' claim.
+        """
+        expires_at_dt = datetime.utcfromtimestamp(expires_at)
+        supabase.table("token_blacklist").insert({
+            "token": token,
+            "expires_at": expires_at_dt.isoformat()
+        }).execute()
+
+    def is_token_revoked(self, token: str) -> bool:
+        """
+        Check if a token has been revoked.
+        """
+        response = supabase.table("token_blacklist").select("id").eq("token", token).execute()
+        return len(response.data) > 0
 
 auth_service = AuthService()

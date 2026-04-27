@@ -1,5 +1,33 @@
+from datetime import date, timedelta
 from fastapi import HTTPException
 from app.core.database import supabase
+
+_MONTH_LABELS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+
+
+def _first_day_months_ago(ref: date, n: int) -> date:
+    month = ref.month - n
+    year = ref.year
+    while month <= 0:
+        month += 12
+        year -= 1
+    return date(year, month, 1)
+
+
+def _linear_trend(values: list) -> list:
+    n = len(values)
+    if n == 0:
+        return []
+    if n == 1:
+        return [float(values[0])]
+    xs = list(range(1, n + 1))
+    x_mean = sum(xs) / n
+    y_mean = sum(values) / n
+    num = sum((xs[i] - x_mean) * (values[i] - y_mean) for i in range(n))
+    den = sum((xs[i] - x_mean) ** 2 for i in range(n))
+    m = num / den if den != 0 else 0
+    b = y_mean - m * x_mean
+    return [round(m * xi + b, 1) for xi in xs]
 
 
 class SchoolAdminService:
@@ -18,6 +46,17 @@ class SchoolAdminService:
                 detail="Tu usuario no está vinculado a ninguna escuela."
             )
         return sa_response.data[0]["school_id"]
+
+    def _calculate_bmi(self, weight_kg: float | None, height_cm: float | None) -> float | None:
+        """
+        Calcula el IMC (BMI) convirtiendo la altura de cm a metros.
+        Retorna None si los datos son inválidos.
+        """
+        if not weight_kg or not height_cm or height_cm <= 0:
+            return None
+        # Conversión de cm a metros
+        height_m = height_cm / 100.0
+        return weight_kg / (height_m ** 2)
 
     # ──────────────────────────────────────────────────────────
     # GET - Mi Perfil
@@ -54,30 +93,73 @@ class SchoolAdminService:
     # GET - Students Resume (Métricas)
     # ──────────────────────────────────────────────────────────
 
-    def get_students_resume(self, user_id: int) -> dict:
+    def get_students_resume(
+        self,
+        user_id: int,
+        category: int | None = None,
+        grade: int | None = None,
+        section: str | None = None,
+    ) -> dict:
         school_id = self._get_school_id_for_admin(user_id)
 
-        # Obtener todos los estudiantes activos vinculados a esta escuela mediante classroom_registration
-        # Paso 1: obtener ids de classrooms que pertenecen a esta escuela
-        classrooms_res = (
+        # ── Validar dependencias entre filtros ────────────────
+        if grade is not None and category is None:
+            raise HTTPException(
+                status_code=400,
+                detail="El parámetro 'grade' requiere que 'category' también sea proporcionado."
+            )
+        if section is not None and (category is None or grade is None):
+            raise HTTPException(
+                status_code=400,
+                detail="El parámetro 'section' requiere que 'category' y 'grade' también sean proporcionados."
+            )
+
+        # ── Obtener el año académico vigente ──────────────────
+        ay_res = (
+            supabase.table("academic_year")
+            .select("id")
+            .eq("is_current", True)
+            .eq("is_deleted", False)
+            .limit(1)
+            .execute()
+        )
+        if not ay_res.data:
+            raise HTTPException(
+                status_code=404,
+                detail="No hay un año académico vigente configurado en el sistema."
+            )
+        academic_year_id = ay_res.data[0]["id"]
+
+        # ── Paso 1: Obtener classrooms de la escuela (con filtros opcionales) ──
+        classrooms_query = (
             supabase.table("classroom")
             .select("id")
             .eq("school_id", school_id)
+            .eq("academic_year_id", academic_year_id)
             .eq("is_deleted", False)
-            .execute()
         )
+        if category is not None:
+            classrooms_query = classrooms_query.eq("category", category)
+        if grade is not None:
+            classrooms_query = classrooms_query.eq("level", grade)
+        if section is not None:
+            classrooms_query = classrooms_query.eq("section", section.upper())
+
+        classrooms_res = classrooms_query.execute()
         classroom_ids = [c["id"] for c in classrooms_res.data] if classrooms_res.data else []
 
-        if not classroom_ids:
-            return {
-                "total_students": 0,
-                "overweight_students": 0,
-                "malnourished_students": 0,
-                "active_cases": 0,
-                "optimal_students": 0,
-            }
+        empty_result = {
+            "total_students": 0,
+            "overweight_students": 0,
+            "malnourished_students": 0,
+            "active_cases": 0,
+            "optimal_students": 0,
+        }
 
-        # Paso 2: obtener student_ids únicos registrados en esas clases
+        if not classroom_ids:
+            return empty_result
+
+        # ── Paso 2: Obtener student_ids únicos en esas aulas ──
         regs_res = (
             supabase.table("classroom_registration")
             .select("student_id")
@@ -88,15 +170,9 @@ class SchoolAdminService:
         total_students = len(student_ids)
 
         if not student_ids:
-            return {
-                "total_students": 0,
-                "overweight_students": 0,
-                "malnourished_students": 0,
-                "active_cases": 0,
-                "optimal_students": 0,
-            }
+            return empty_result
 
-        # ── SOBREPESO Y DESNUTRICIÓN (Basado en IMC) ───────────
+        # ── SOBREPESO Y DESNUTRICIÓN (Basado en IMC) ──────────
         metrics_res = (
             supabase.table("student_metrics")
             .select("student_id, height, weight")
@@ -105,27 +181,26 @@ class SchoolAdminService:
             .eq("is_deleted", False)
             .execute()
         )
-        
+
         overweight_students = 0
         malnourished_students = 0
-        
+
         if metrics_res.data:
             for m in metrics_res.data:
-                height = m.get("height")
-                weight = m.get("weight")
-                if height and weight and height > 0:
-                    bmi = weight / (height ** 2)
+                bmi = self._calculate_bmi(m.get("weight"), m.get("height"))
+                if bmi is not None:
                     if bmi < 18.5:
                         malnourished_students += 1
                     elif bmi > 24.9:
                         overweight_students += 1
 
-        # ── CASOS ACTIVOS ──────────────────────────────────────
+        # ── CASOS ACTIVOS ─────────────────────────────────────
         cases_res = (
             supabase.table("medical_case")
             .select("id")
             .in_("student_id", student_ids)
             .is_("end_date", "null")
+            .is_("final diagnosis", "null")
             .eq("is_deleted", False)
             .execute()
         )
@@ -465,6 +540,140 @@ class SchoolAdminService:
             "altura": altura if altura else [],
         }
 
+
+    # ──────────────────────────────────────────────────────────
+    # GET - Búsqueda / Filtrado de casos médicos de la escuela
+    # ──────────────────────────────────────────────────────────
+
+    def search_medical_cases(
+        self,
+        user_id: int,
+        page: int,
+        size: int,
+        status: str | None = None,
+        type_of_case: str | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ) -> dict:
+        """
+        Búsqueda paginada de casos médicos con filtros opcionales.
+
+        Filtros:
+        - status: 'activo' o 'resuelto'.
+          Un caso está RESUELTO cuando end_date y final_diagnosis son ambos no nulos.
+          Si está activo al menos uno de ellos es nulo.
+        - type_of_case: ALERGIA | LESION | ENFERMEDAD | EMERGENCIA
+        - date_from / date_to: rango de fechas sobre init_date (ambos opcionales e independientes).
+        """
+        school_id = self._get_school_id_for_admin(user_id)
+
+        # 1. Obtener IDs de classrooms de la escuela
+        classrooms_res = (
+            supabase.table("classroom")
+            .select("id")
+            .eq("school_id", school_id)
+            .eq("is_deleted", False)
+            .execute()
+        )
+        if not classrooms_res.data:
+            return {"data": [], "total": 0, "page": page, "size": size}
+
+        classroom_ids = [c["id"] for c in classrooms_res.data]
+
+        # 2. Obtener IDs únicos de estudiantes inscritos en esos classrooms
+        regs_res = (
+            supabase.table("classroom_registration")
+            .select("student_id")
+            .in_("classroom_id", classroom_ids)
+            .execute()
+        )
+        if not regs_res.data:
+            return {"data": [], "total": 0, "page": page, "size": size}
+
+        student_ids = list({r["student_id"] for r in regs_res.data})
+
+        # 3. Construir query base con filtros directos en Supabase
+        query = (
+            supabase.table("medical_case")
+            .select("id, type_of_case, symptomatology, init_date, end_date, final_diagnosis, student_id")
+            .in_("student_id", student_ids)
+            .eq("is_deleted", False)
+        )
+
+        # Filtro por tipo de caso
+        if type_of_case:
+            query = query.eq("type_of_case", type_of_case.upper())
+
+        # Filtro de rango de fechas sobre init_date
+        if date_from:
+            query = query.gte("init_date", str(date_from))
+        if date_to:
+            query = query.lte("init_date", str(date_to))
+
+        # Ejecutar SIN paginación para poder filtrar por status en Python y contar el total correcto
+        all_res = query.order("init_date", desc=True).execute()
+        all_cases = all_res.data if all_res.data else []
+
+        # 4. Filtrar por status en Python (regla de negocio: resuelto = end_date AND final_diagnosis no nulos)
+        if status:
+            status_lower = status.lower()
+            if status_lower == "resuelto":
+                all_cases = [
+                    c for c in all_cases
+                    if c.get("end_date") is not None and c.get("final_diagnosis") is not None
+                ]
+            elif status_lower == "activo":
+                all_cases = [
+                    c for c in all_cases
+                    if c.get("end_date") is None or c.get("final_diagnosis") is None
+                ]
+
+        total = len(all_cases)
+
+        # 5. Paginación manual sobre la lista filtrada
+        offset = (page - 1) * size
+        paginated_cases = all_cases[offset: offset + size]
+
+        if not paginated_cases:
+            return {"data": [], "total": total, "page": page, "size": size}
+
+        # 6. Enriquecer con nombre del estudiante
+        matched_student_ids = list({c["student_id"] for c in paginated_cases})
+        students_res = (
+            supabase.table("student")
+            .select("id, name, lastname")
+            .in_("id", matched_student_ids)
+            .execute()
+        )
+        student_map = {}
+        if students_res.data:
+            student_map = {
+                s["id"]: f"{s.get('name', '')} {s.get('lastname', '')}".strip()
+                for s in students_res.data
+            }
+
+        # 7. Formatear respuesta
+        formatted_cases = []
+        for case in paginated_cases:
+            is_resolved = (
+                case.get("end_date") is not None
+                and case.get("final_diagnosis") is not None
+            )
+            formatted_cases.append({
+                "id": case["id"],
+                "status": "resuelto" if is_resolved else "activo",
+                "start_date": case.get("init_date"),
+                "student_name": student_map.get(case["student_id"], "Estudiante Desconocido"),
+                "type_of_case": case.get("type_of_case"),
+                "description": case.get("symptomatology"),
+            })
+
+        return {
+            "data": formatted_cases,
+            "total": total,
+            "page": page,
+            "size": size,
+        }
 
     # ──────────────────────────────────────────────────────────
     # GET - Casos médicos de la escuela (paginados)
@@ -1160,5 +1369,303 @@ class SchoolAdminService:
             .execute()
         )
         return update_res.data[0] if update_res.data else {}
+
+    # ──────────────────────────────────────────────────────────
+    # GET - Resumen de categorías y niveles del año vigente
+    # ──────────────────────────────────────────────────────────
+
+    def get_classroom_categories_summary(self, user_id: int, category_id: int | None = None) -> dict:
+        school_id = self._get_school_id_for_admin(user_id)
+
+        ay_res = (
+            supabase.table("academic_year")
+            .select("id, name")
+            .eq("is_current", True)
+            .eq("is_deleted", False)
+            .limit(1)
+            .execute()
+        )
+        if not ay_res.data:
+            raise HTTPException(
+                status_code=404,
+                detail="No hay un año académico vigente configurado en el sistema."
+            )
+        academic_year_id = ay_res.data[0]["id"]
+
+        query = (
+            supabase.table("classroom")
+            .select("level, category, classroom_category(id, classroom_type_name)")
+            .eq("school_id", school_id)
+            .eq("academic_year_id", academic_year_id)
+            .eq("is_deleted", False)
+        )
+        
+        if category_id is not None:
+            query = query.eq("category", category_id)
+            
+        rows_res = query.execute()
+
+        if not rows_res.data:
+            return {"items": []}
+
+        seen: set = set()
+        items = []
+        for row in rows_res.data:
+            level = row["level"]
+            cat_id = row["category"]
+            cat_info = row.get("classroom_category") or {}
+            key = (level, cat_id)
+            if key not in seen:
+                seen.add(key)
+                items.append({
+                    "level": level,
+                    "classroom_category_id": cat_id,
+                    "classroom_type_name": cat_info.get("classroom_type_name"),
+                })
+
+        items.sort(key=lambda x: (x["classroom_category_id"], x["level"]))
+        return {"items": items}
+
+    # ──────────────────────────────────────────────────────────
+    # GET - Categorías de grados disponibles del año vigente
+    # ──────────────────────────────────────────────────────────
+
+    def get_available_classroom_categories(self, user_id: int) -> dict:
+        school_id = self._get_school_id_for_admin(user_id)
+
+        # 1. Obtener año académico vigente
+        ay_res = (
+            supabase.table("academic_year")
+            .select("id")
+            .eq("is_current", True)
+            .eq("is_deleted", False)
+            .limit(1)
+            .execute()
+        )
+        if not ay_res.data:
+            raise HTTPException(
+                status_code=404,
+                detail="No hay un año académico vigente configurado en el sistema."
+            )
+        academic_year_id = ay_res.data[0]["id"]
+
+        # 2. Obtener categorías únicas de las aulas de la escuela en este año
+        rows_res = (
+            supabase.table("classroom")
+            .select("category, classroom_category(id, classroom_type_name)")
+            .eq("school_id", school_id)
+            .eq("academic_year_id", academic_year_id)
+            .eq("is_deleted", False)
+            .execute()
+        )
+
+        if not rows_res.data:
+            return {"items": []}
+
+        seen_cats = set()
+        items = []
+        for row in rows_res.data:
+            cat_id = row["category"]
+            if cat_id and cat_id not in seen_cats:
+                seen_cats.add(cat_id)
+                cat_info = row.get("classroom_category") or {}
+                items.append({
+                    "classroom_category_id": cat_id,
+                    "classroom_type_name": cat_info.get("classroom_type_name")
+                })
+
+        items.sort(key=lambda x: x["classroom_category_id"])
+        return {"items": items}
+
+    # ──────────────────────────────────────────────────────────
+    # GET - Secciones disponibles por categoría y nivel
+    # ──────────────────────────────────────────────────────────
+
+    def get_sections_by_category_and_level(self, user_id: int, category_id: int, level: int) -> dict:
+        school_id = self._get_school_id_for_admin(user_id)
+
+        ay_res = (
+            supabase.table("academic_year")
+            .select("id, name")
+            .eq("is_current", True)
+            .eq("is_deleted", False)
+            .limit(1)
+            .execute()
+        )
+        if not ay_res.data:
+            raise HTTPException(
+                status_code=404,
+                detail="No hay un año académico vigente configurado en el sistema."
+            )
+        academic_year_id = ay_res.data[0]["id"]
+
+        rows_res = (
+            supabase.table("classroom")
+            .select("id, section")
+            .eq("school_id", school_id)
+            .eq("academic_year_id", academic_year_id)
+            .eq("category", category_id)
+            .eq("level", level)
+            .eq("is_deleted", False)
+            .order("section")
+            .execute()
+        )
+
+        items = [
+            {
+                "classroom_id": row["id"],
+                "classroom_category_id": category_id,
+                "level": level,
+                "section": row["section"],
+            }
+            for row in (rows_res.data or [])
+        ]
+
+        return {"items": items}
+
+    # ──────────────────────────────────────────────────────────
+    # GET - Tendencia de casos médicos (mensual / semanal)
+    # ──────────────────────────────────────────────────────────
+
+    def get_medical_cases_tendency(
+        self,
+        user_id: int,
+        mode: str,
+        months: int,
+        weeks: int,
+    ) -> dict:
+        school_id = self._get_school_id_for_admin(user_id)
+
+        classrooms_res = (
+            supabase.table("classroom")
+            .select("id")
+            .eq("school_id", school_id)
+            .eq("is_deleted", False)
+            .execute()
+        )
+        classroom_ids = [c["id"] for c in (classrooms_res.data or [])]
+        if not classroom_ids:
+            return {"summary": {"total_incidents": 0, "growth_rate": 0.0}, "data": []}
+
+        regs_res = (
+            supabase.table("classroom_registration")
+            .select("student_id")
+            .in_("classroom_id", classroom_ids)
+            .execute()
+        )
+        student_ids = list({r["student_id"] for r in (regs_res.data or [])})
+        if not student_ids:
+            return {"summary": {"total_incidents": 0, "growth_rate": 0.0}, "data": []}
+
+        today = date.today()
+
+        if mode == "weekly":
+            current_start = today - timedelta(weeks=weeks)
+            previous_start = current_start - timedelta(weeks=weeks)
+            previous_end = current_start - timedelta(days=1)
+
+            cases_res = (
+                supabase.table("medical_case")
+                .select("init_date")
+                .in_("student_id", student_ids)
+                .gte("init_date", current_start.isoformat())
+                .lte("init_date", today.isoformat())
+                .eq("is_deleted", False)
+                .execute()
+            )
+            cases = cases_res.data or []
+
+            week_order = []
+            week_buckets: dict = {}
+            for i in range(weeks):
+                ws = current_start + timedelta(weeks=i)
+                iso_year, iso_week, _ = ws.isocalendar()
+                key = (iso_year, iso_week)
+                if key not in week_buckets:
+                    week_buckets[key] = {"label": f"Sem {iso_week}", "count": 0}
+                    week_order.append(key)
+
+            for case in cases:
+                raw = (case.get("init_date") or "")[:10]
+                if raw:
+                    d = date.fromisoformat(raw)
+                    iso_year, iso_week, _ = d.isocalendar()
+                    key = (iso_year, iso_week)
+                    if key in week_buckets:
+                        week_buckets[key]["count"] += 1
+
+            values = [week_buckets[k]["count"] for k in week_order]
+            trends = _linear_trend(values)
+            data = [
+                {"label": week_buckets[week_order[i]]["label"], "value": values[i], "trend": trends[i]}
+                for i in range(len(week_order))
+            ]
+
+        else:
+            current_start = _first_day_months_ago(today, months)
+            previous_start = _first_day_months_ago(current_start, months)
+            previous_end = current_start - timedelta(days=1)
+
+            cases_res = (
+                supabase.table("medical_case")
+                .select("init_date")
+                .in_("student_id", student_ids)
+                .gte("init_date", current_start.isoformat())
+                .lte("init_date", today.isoformat())
+                .eq("is_deleted", False)
+                .execute()
+            )
+            cases = cases_res.data or []
+
+            month_order = []
+            month_buckets: dict = {}
+            ref = current_start
+            while ref <= today:
+                key = (ref.year, ref.month)
+                if key not in month_buckets:
+                    month_buckets[key] = {"label": _MONTH_LABELS[ref.month - 1], "count": 0}
+                    month_order.append(key)
+                ref = date(ref.year + (ref.month // 12), ref.month % 12 + 1, 1)
+
+            for case in cases:
+                raw = (case.get("init_date") or "")[:10]
+                if raw:
+                    d = date.fromisoformat(raw)
+                    key = (d.year, d.month)
+                    if key in month_buckets:
+                        month_buckets[key]["count"] += 1
+
+            values = [month_buckets[k]["count"] for k in month_order]
+            trends = _linear_trend(values)
+            data = [
+                {"label": month_buckets[month_order[i]]["label"], "value": values[i], "trend": trends[i]}
+                for i in range(len(month_order))
+            ]
+
+        total_incidents = sum(values)
+
+        prev_res = (
+            supabase.table("medical_case")
+            .select("id", count="exact")
+            .in_("student_id", student_ids)
+            .gte("init_date", previous_start.isoformat())
+            .lte("init_date", previous_end.isoformat())
+            .eq("is_deleted", False)
+            .execute()
+        )
+        previous_total = prev_res.count or 0
+
+        if previous_total > 0:
+            growth_rate = round(((total_incidents - previous_total) / previous_total) * 100, 1)
+        elif total_incidents > 0:
+            growth_rate = 100.0
+        else:
+            growth_rate = 0.0
+
+        return {
+            "summary": {"total_incidents": total_incidents, "growth_rate": growth_rate},
+            "data": data,
+        }
+
 
 school_admin_service = SchoolAdminService()
