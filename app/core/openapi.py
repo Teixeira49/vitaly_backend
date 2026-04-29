@@ -5,7 +5,12 @@ from fastapi.responses import HTMLResponse
 tags_metadata = [
     {"name": "auth", "description": "Operaciones de autenticación, login y registro de diferentes roles."},
     {"name": "Administrador de Sistema", "description": "Gestión global del sistema por superusuarios."},
+    {"name": "Administrador de Sistema - Feat. Escuela", "description": "Gestión de escuelas por parte del administrador de sistema."},
     {"name": "Administrador de Escuela", "description": "Gestión específica para los administradores de cada plantel."},
+    {"name": "Administrador de Escuela - Estudiantes", "description": "Gestión de estudiantes, representantes y salones de clase."},
+    {"name": "Administrador de Escuela - Salones", "description": "Gestión de salones, grados y categorías académicas."},
+    {"name": "Administrador de Escuela - Eventos", "description": "Gestión de eventos y comunicados de la escuela."},
+    {"name": "Administrador de Escuela - Médico", "description": "Gestión de casos médicos y personal de salud."},
     {"name": "Representante", "description": "Funcionalidades para padres y representantes de alumnos."},
     {"name": "Catálogos Públicos", "description": "Endpoints de consulta general para catálogos del sistema."},
     {"name": "Escuelas Públicas", "description": "Consulta de información pública de escuelas."},
