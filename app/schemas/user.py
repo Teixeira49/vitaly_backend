@@ -53,6 +53,15 @@ class UserResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    lastname: Optional[str] = None
+    identity_number: Optional[str] = None
+    birthday: Optional[date] = None
+    gender: Optional[str] = None
+    address: Optional[str] = None
+    biography: Optional[str] = None
+
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"

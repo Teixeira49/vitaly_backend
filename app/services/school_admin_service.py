@@ -78,16 +78,52 @@ class SchoolAdminService:
         
         if "password" in user_info:
             del user_info["password"]
+
+        # Manejo de nulos según requerimiento
+        user_info["gender"] = user_info.get("gender") or "No especificado"
+        user_info["address"] = user_info.get("address") or "Dirección desconocida"
+        user_info["biography"] = user_info.get("biography") or "Sin biografía"
+        user_info["identity_number"] = user_info.get("identity_number") or "N/A"
             
         return {
             "user_info": user_info,
             "admin_info": admin_data,
             "school_info": {
-                "name": school_info.get("name"),
-                "year_foundation": school_info.get("year_foundation"),
-                "address": school_info.get("address")
+                "name": school_info.get("name") or "Nombre no disponible",
+                "year_foundation": school_info.get("year_foundation") or "Desconocido",
+                "address": school_info.get("address") or "Dirección no disponible"
             }
         }
+
+    # ──────────────────────────────────────────────────────────
+    # PUT - Actualizar Mi Perfil
+    # ──────────────────────────────────────────────────────────
+
+    def update_my_profile(self, user_id: int, payload: dict) -> dict:
+        """
+        Actualiza la información del usuario autenticado en la tabla 'user'.
+        """
+        if not payload:
+            return self.get_my_profile(user_id)
+
+        update_data = payload.copy()
+        
+        # Si viene birthday (date), convertir a string ISO
+        if "birthday" in update_data and hasattr(update_data["birthday"], "isoformat"):
+            update_data["birthday"] = update_data["birthday"].isoformat()
+
+        # Actualizar en Supabase
+        update_res = (
+            supabase.table("user")
+            .update(update_data)
+            .eq("id", user_id)
+            .execute()
+        )
+
+        if not update_res.data:
+            raise HTTPException(status_code=400, detail="No se pudo actualizar el perfil.")
+
+        return self.get_my_profile(user_id)
 
     # ──────────────────────────────────────────────────────────
     # GET - Students Resume (Métricas)
@@ -339,10 +375,54 @@ class SchoolAdminService:
             .in_("id", student_ids)
             .execute()
         )
+        students = students_res.data or []
+
+        # 1. Obtener casos médicos activos para comprobar has_active_medical_case
+        cases_res = (
+            supabase.table("medical_case")
+            .select("student_id")
+            .in_("student_id", student_ids)
+            .is_("end_date", "null")
+            .eq("is_deleted", False)
+            .execute()
+        )
+        active_cases_students = {c["student_id"] for c in (cases_res.data or [])}
+
+        # 2. Obtener métricas actuales para el BMI
+        metrics_res = (
+            supabase.table("student_metrics")
+            .select("student_id, weight, height")
+            .in_("student_id", student_ids)
+            .eq("is_current", True)
+            .eq("is_deleted", False)
+            .execute()
+        )
+        metrics_map = {m["student_id"]: m for m in (metrics_res.data or [])}
+
+        # 3. Enriquecer datos
+        for s in students:
+            sid = s["id"]
+            
+            # Caso médico activo
+            s["has_active_medical_case"] = sid in active_cases_students
+
+            # BMI status
+            nutritional_status = "SIN DATOS"
+            metric = metrics_map.get(sid)
+            if metric:
+                bmi = self._calculate_bmi(metric.get("weight"), metric.get("height"))
+                if bmi:
+                    if bmi < 18.5:
+                        nutritional_status = "DESNUTRIDO"
+                    elif bmi <= 24.9:
+                        nutritional_status = "OPTIMO"
+                    else:
+                        nutritional_status = "SOBREPESO"
+            s["bmi_status"] = nutritional_status
 
         return {
             "classroom": classroom,
-            "data": students_res.data,
+            "data": students,
             "total": total,
             "page": page,
             "size": size,
@@ -384,7 +464,7 @@ class SchoolAdminService:
         classroom_id = reg_res.data[0]["classroom_id"]
         cr_res = (
             supabase.table("classroom")
-            .select("school_id")
+            .select("school_id, category, level, section")
             .eq("id", classroom_id)
             .execute()
         )
@@ -393,6 +473,12 @@ class SchoolAdminService:
                 status_code=403,
                 detail="No tienes permiso para visualizar a este estudiante: pertenece a otra escuela."
             )
+        
+        # Agregar información del salón al objeto del estudiante
+        classroom = cr_res.data[0]
+        student["classroom_category"] = classroom.get("category")
+        student["classroom_level"] = classroom.get("level")
+        student["section"] = classroom.get("section")
 
         # 3. Representantes: student_representative → parent → user
         sr_res = (
@@ -443,8 +529,9 @@ class SchoolAdminService:
             weight_kg: float = metric["weight"]
             height_m: float = metric["height"]
 
-            if height_m and height_m > 0:
-                bmi = round(weight_kg / (height_m ** 2), 2)
+            bmi = self._calculate_bmi(weight_kg, height_m)
+            if bmi is not None:
+                bmi = round(bmi, 2)
                 if bmi < 18.5:
                     nutritional_status = "DESNUTRIDO"
                 elif bmi <= 24.9:
@@ -554,16 +641,19 @@ class SchoolAdminService:
         type_of_case: str | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
+        q: str | None = None,
+        search_by: str | None = None,
+        current_year_only: bool = False,
     ) -> dict:
         """
-        Búsqueda paginada de casos médicos con filtros opcionales.
+        Búsqueda paginada de casos médicos con filtros opcionales y búsqueda por texto.
 
         Filtros:
         - status: 'activo' o 'resuelto'.
-          Un caso está RESUELTO cuando end_date y final_diagnosis son ambos no nulos.
-          Si está activo al menos uno de ellos es nulo.
         - type_of_case: ALERGIA | LESION | ENFERMEDAD | EMERGENCIA
-        - date_from / date_to: rango de fechas sobre init_date (ambos opcionales e independientes).
+        - date_from / date_to: rango de fechas sobre init_date.
+        - q: Texto a buscar.
+        - search_by: 'student' (nombre/apellido) o 'case' (title, symptomatology, initial diagnosis).
         """
         school_id = self._get_school_id_for_admin(user_id)
 
@@ -592,78 +682,127 @@ class SchoolAdminService:
 
         student_ids = list({r["student_id"] for r in regs_res.data})
 
-        # 3. Construir query base con filtros directos en Supabase
+        # 3. Traer los datos de los estudiantes para la búsqueda por nombre y formateo
+        students_res = (
+            supabase.table("student")
+            .select("id, name, lastname")
+            .in_("id", student_ids)
+            .execute()
+        )
+        student_map = {}
+        if students_res.data:
+            for s in students_res.data:
+                student_map[s["id"]] = s
+
+        # 4. Obtener fechas del año académico vigente si es necesario
+        ay_init_date = None
+        ay_end_date = None
+        if current_year_only:
+            ay_res = (
+                supabase.table("academic_year")
+                .select("init_date, end_date")
+                .eq("is_current", True)
+                .eq("is_deleted", False)
+                .limit(1)
+                .execute()
+            )
+            if ay_res.data:
+                ay = ay_res.data[0]
+                ay_init_date = ay.get("init_date")
+                ay_end_date = ay.get("end_date")
+
+        # 5. Construir query base con filtros directos en Supabase
         query = (
             supabase.table("medical_case")
-            .select("id, type_of_case, symptomatology, init_date, end_date, final_diagnosis, student_id")
+            .select("id, type_of_case, title, symptomatology, \"initial diagnosis\", init_date, end_date, \"final diagnosis\", student_id")
             .in_("student_id", student_ids)
             .eq("is_deleted", False)
         )
 
-        # Filtro por tipo de caso
         if type_of_case:
             query = query.eq("type_of_case", type_of_case.upper())
+            
+        effective_date_from = date_from.isoformat() if date_from else None
+        if current_year_only and ay_init_date:
+            effective_date_from = max(effective_date_from, ay_init_date) if effective_date_from else ay_init_date
+            
+        effective_date_to = date_to.isoformat() if date_to else None
+        if current_year_only and ay_end_date:
+            effective_date_to = min(effective_date_to, ay_end_date) if effective_date_to else ay_end_date
+            
+        if effective_date_from:
+            query = query.gte("init_date", effective_date_from)
+        if effective_date_to:
+            query = query.lte("init_date", effective_date_to)
 
-        # Filtro de rango de fechas sobre init_date
-        if date_from:
-            query = query.gte("init_date", str(date_from))
-        if date_to:
-            query = query.lte("init_date", str(date_to))
-
-        # Ejecutar SIN paginación para poder filtrar por status en Python y contar el total correcto
         all_res = query.order("init_date", desc=True).execute()
         all_cases = all_res.data if all_res.data else []
 
-        # 4. Filtrar por status en Python (regla de negocio: resuelto = end_date AND final_diagnosis no nulos)
+        # 6. Aplicar filtro de búsqueda por texto (q) y tipo de búsqueda (search_by) en Python
+        if q:
+            q_lower = q.lower()
+            filtered_cases = []
+            for c in all_cases:
+                student = student_map.get(c["student_id"], {})
+                student_full_name = f"{student.get('name', '')} {student.get('lastname', '')}".lower()
+                
+                match_student = q_lower in student_full_name
+                
+                case_title = (c.get("title") or "").lower()
+                case_symp = (c.get("symptomatology") or "").lower()
+                case_init_diag = (c.get("initial diagnosis") or "").lower()
+                
+                match_case = (q_lower in case_title) or (q_lower in case_symp) or (q_lower in case_init_diag)
+                
+                if search_by == "student":
+                    if match_student:
+                        filtered_cases.append(c)
+                elif search_by == "case":
+                    if match_case:
+                        filtered_cases.append(c)
+                else:
+                    if match_student or match_case:
+                        filtered_cases.append(c)
+            all_cases = filtered_cases
+
+        # 7. Filtrar por status en Python (resuelto = end_date AND final_diagnosis no nulos)
         if status:
             status_lower = status.lower()
             if status_lower == "resuelto":
                 all_cases = [
                     c for c in all_cases
-                    if c.get("end_date") is not None and c.get("final_diagnosis") is not None
+                    if c.get("end_date") is not None and c.get("final diagnosis") is not None
                 ]
             elif status_lower == "activo":
                 all_cases = [
                     c for c in all_cases
-                    if c.get("end_date") is None or c.get("final_diagnosis") is None
+                    if c.get("end_date") is None or c.get("final diagnosis") is None
                 ]
 
         total = len(all_cases)
 
-        # 5. Paginación manual sobre la lista filtrada
+        # 8. Paginación manual
         offset = (page - 1) * size
         paginated_cases = all_cases[offset: offset + size]
 
         if not paginated_cases:
             return {"data": [], "total": total, "page": page, "size": size}
 
-        # 6. Enriquecer con nombre del estudiante
-        matched_student_ids = list({c["student_id"] for c in paginated_cases})
-        students_res = (
-            supabase.table("student")
-            .select("id, name, lastname")
-            .in_("id", matched_student_ids)
-            .execute()
-        )
-        student_map = {}
-        if students_res.data:
-            student_map = {
-                s["id"]: f"{s.get('name', '')} {s.get('lastname', '')}".strip()
-                for s in students_res.data
-            }
-
-        # 7. Formatear respuesta
+        # 9. Formatear respuesta
         formatted_cases = []
         for case in paginated_cases:
             is_resolved = (
                 case.get("end_date") is not None
-                and case.get("final_diagnosis") is not None
+                and case.get("final diagnosis") is not None
             )
+            student = student_map.get(case["student_id"], {})
+            student_name = f"{student.get('name', '')} {student.get('lastname', '')}".strip() or "Estudiante Desconocido"
+            
             formatted_cases.append({
                 "id": case["id"],
                 "status": "resuelto" if is_resolved else "activo",
                 "start_date": case.get("init_date"),
-                "student_name": student_map.get(case["student_id"], "Estudiante Desconocido"),
+                "student_name": student_name,
                 "type_of_case": case.get("type_of_case"),
                 "description": case.get("symptomatology"),
             })
@@ -679,7 +818,7 @@ class SchoolAdminService:
     # GET - Casos médicos de la escuela (paginados)
     # ──────────────────────────────────────────────────────────
 
-    def get_medical_cases(self, user_id: int, page: int, size: int) -> dict:
+    def get_medical_cases(self, user_id: int, page: int, size: int, current_year_only: bool = False) -> dict:
         school_id = self._get_school_id_for_admin(user_id)
 
         # 1. Obtener los IDs de los estudiantes que pertenecen a esta escuela
@@ -707,13 +846,39 @@ class SchoolAdminService:
         student_ids = list({r["student_id"] for r in regs_res.data})
 
         # 2. Contar los casos médicos pertenecientes a estos estudiantes
-        count_res = (
+        count_query = (
             supabase.table("medical_case")
             .select("id", count="exact")
             .in_("student_id", student_ids)
             .eq("is_deleted", False)
-            .execute()
         )
+        
+        data_query = (
+            supabase.table("medical_case")
+            .select("id, type_of_case, symptomatology, init_date, end_date, student_id")
+            .in_("student_id", student_ids)
+            .eq("is_deleted", False)
+        )
+
+        if current_year_only:
+            ay_res = (
+                supabase.table("academic_year")
+                .select("init_date, end_date")
+                .eq("is_current", True)
+                .eq("is_deleted", False)
+                .limit(1)
+                .execute()
+            )
+            if ay_res.data:
+                ay = ay_res.data[0]
+                if ay.get("init_date"):
+                    count_query = count_query.gte("init_date", ay["init_date"])
+                    data_query = data_query.gte("init_date", ay["init_date"])
+                if ay.get("end_date"):
+                    count_query = count_query.lte("init_date", ay["end_date"])
+                    data_query = data_query.lte("init_date", ay["end_date"])
+
+        count_res = count_query.execute()
         total = count_res.count or 0
         if total == 0:
             return {"data": [], "total": 0, "page": page, "size": size}
@@ -721,10 +886,7 @@ class SchoolAdminService:
         # 3. Obtener casos médicos paginados
         offset = (page - 1) * size
         cases_res = (
-            supabase.table("medical_case")
-            .select("id, type_of_case, symptomatology, init_date, end_date, student_id")
-            .in_("student_id", student_ids)
-            .eq("is_deleted", False)
+            data_query
             .order("init_date", desc=True)
             .range(offset, offset + size - 1)
             .execute()
@@ -807,7 +969,7 @@ class SchoolAdminService:
         # 3. Obtener doctores
         docs_res = (
             supabase.table("doctor")
-            .select("doc_id, user_id, doc_license_number, especially")
+            .select("doc_id, user_id, doc_license_number, especially, experience_years")
             .in_("doc_id", doctor_ids)
             .execute()
         )
@@ -824,16 +986,16 @@ class SchoolAdminService:
         )
         users_map = {u["id"]: u for u in users_res.data}
 
-        # 5. Obtener los nombres de los estados
-        states_map = {}
+        # 5. Obtener los nombres de los estatus
+        status_map = {}
         if status_ids:
-            states_res = (
-                supabase.table("states")
-                .select("state_id, state_name")
-                .in_("state_id", status_ids)
+            status_res = (
+                supabase.table("system_status")
+                .select("status_id, status_name")
+                .in_("status_id", status_ids)
                 .execute()
             )
-            states_map = {s["state_id"]: s.get("state_name", "Desconocido") for s in states_res.data}
+            status_map = {str(s["status_id"]): s.get("status_name", "Desconocido") for s in status_res.data}
 
         # 6. Formatear la lista de doctores
         formatted_doctors = []
@@ -854,11 +1016,22 @@ class SchoolAdminService:
                 
             full_name = f"{prefix} {user.get('name', '')} {user.get('lastname', '')}".strip()
             
+            experience_years = doctor.get("experience_years")
+            years_of_experience = 0
+            if experience_years:
+                current_year = date.today().year
+                years_of_experience = max(0, current_year - experience_years)
+                
             formatted_doctors.append({
-                "name": full_name,
+                "id": d2s["doctor_id"],
+                "fullname": full_name,
+                "name": user.get("name"),
+                "lastname": user.get("lastname"),
                 "specialty": doctor.get("especially"),
                 "medical_license": doctor.get("doc_license_number"),
-                "status": states_map.get(d2s.get("status"), "Desconocido")
+                "status": status_map.get(str(d2s.get("status")), "Desconocido"),
+                "experience_years": experience_years,
+                "years_of_experience": years_of_experience
             })
 
         return {
@@ -867,6 +1040,178 @@ class SchoolAdminService:
             "page": page,
             "size": size,
         }
+
+    # ──────────────────────────────────────────────────────────
+    # GET - Detalle de un Doctor
+    # ──────────────────────────────────────────────────────────
+
+    def get_doctor_detail(self, user_id: int, doctor_id: int) -> dict:
+        """
+        Obtiene el detalle completo de un médico para el administrador de escuela.
+        Incluye información profesional y personal del usuario vinculado.
+        """
+        school_id = self._get_school_id_for_admin(user_id)
+
+        # 1. Verificar que el doctor esté vinculado a esta escuela
+        d2s_res = (
+            supabase.table("doctor_to_school")
+            .select("status")
+            .eq("doctor_id", doctor_id)
+            .eq("school_id", school_id)
+            .execute()
+        )
+        if not d2s_res.data:
+            raise HTTPException(
+                status_code=403,
+                detail="No tienes permiso para ver los detalles de este médico: no pertenece a tu escuela o no está vinculado."
+            )
+        d2s_data = d2s_res.data[0]
+
+        # 2. Obtener información del doctor y su usuario vinculado
+        doc_res = (
+            supabase.table("doctor")
+            .select("*, user(*)")
+            .eq("doc_id", doctor_id)
+            .execute()
+        )
+        if not doc_res.data:
+            raise HTTPException(status_code=404, detail=f"No existe ningún médico con ID {doctor_id}.")
+        
+        doctor_data = doc_res.data[0]
+        user_data = doctor_data.pop("user", {}) if doctor_data.get("user") else {}
+
+        # 3. Obtener el nombre del estatus en la escuela
+        status_name = "Desconocido"
+        if d2s_data.get("status"):
+            st_res = (
+                supabase.table("system_status")
+                .select("status_name")
+                .eq("status_id", d2s_data["status"])
+                .execute()
+            )
+            if st_res.data:
+                status_name = st_res.data[0].get("status_name", "Desconocido")
+                print(f"DEBUG: Status found for doctor {doctor_id}: {status_name}")
+            else:
+                print(f"DEBUG: No status found in system_status for id {d2s_data['status']}")
+
+        # 4. Obtener teléfonos del usuario
+        phones = []
+        if user_data.get("id"):
+            phones_res = (
+                supabase.table("user_phones")
+                .select("phone_number, phone_category")
+                .eq("user_id", user_data["id"])
+                .execute()
+            )
+            phones = phones_res.data if phones_res.data else []
+
+        # 5. Calcular años de experiencia
+        experience_years = doctor_data.get("experience_years")
+        years_of_experience = 0
+        if experience_years:
+            current_year = date.today().year
+            years_of_experience = max(0, current_year - experience_years)
+
+        # 6. Formatear respuesta final
+        gender = user_data.get("gender")
+        prefix = "Dr."
+        if gender and str(gender).strip().upper() in ["F", "FEMALE", "FEMENINO", "MUJER"]:
+            prefix = "Dra."
+        
+        full_name = f"{prefix} {user_data.get('name', '')} {user_data.get('lastname', '')}".strip()
+
+        return {
+            "doctor_info": {
+                "id": doctor_id,
+                "doc_license_number": doctor_data.get("doc_license_number"),
+                "specialty": doctor_data.get("especially"),
+                "experience_years": experience_years,
+                "years_of_experience": years_of_experience,
+                "school_status": status_name,
+                "created_at": doctor_data.get("created_at"),
+                "updated_at": doctor_data.get("updated_at")
+            },
+            "user_info": {
+                "id": user_data.get("id"),
+                "email": user_data.get("email"),
+                "name": user_data.get("name"),
+                "lastname": user_data.get("lastname"),
+                "fullname": full_name,
+                "gender": user_data.get("gender"),
+                "birthday": user_data.get("birthday"),
+                "address": user_data.get("address"),
+                "identity_number": user_data.get("identity_number"),
+                "biography": user_data.get("biography"),
+                "phones": phones
+            }
+        }
+
+    # ──────────────────────────────────────────────────────────
+    # PATCH - Suspender / Activar Doctor en la Escuela
+    # ──────────────────────────────────────────────────────────
+
+    def suspend_doctor(self, user_id: int, doctor_id: int) -> dict:
+        """
+        Cambia el estado de un doctor a 'SUSPENDIDO' (status_id=1) en la relación con la escuela del admin.
+        """
+        school_id = self._get_school_id_for_admin(user_id)
+
+        # Verificar existencia de la relación
+        d2s_res = (
+            supabase.table("doctor_to_school")
+            .select("id")
+            .eq("doctor_id", doctor_id)
+            .eq("school_id", school_id)
+            .execute()
+        )
+        if not d2s_res.data:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"El médico con ID {doctor_id} no está vinculado a tu escuela."
+            )
+
+        # Actualizar a SUSPENDIDO (1)
+        update_res = (
+            supabase.table("doctor_to_school")
+            .update({"status": 1})
+            .eq("doctor_id", doctor_id)
+            .eq("school_id", school_id)
+            .execute()
+        )
+        
+        return {"message": "Las labores del doctor han sido suspendidas exitosamente."}
+
+    def reactivate_doctor(self, user_id: int, doctor_id: int) -> dict:
+        """
+        Cambia el estado de un doctor a 'ACTIVO' (status_id=2) en la relación con la escuela del admin.
+        """
+        school_id = self._get_school_id_for_admin(user_id)
+
+        # Verificar existencia de la relación
+        d2s_res = (
+            supabase.table("doctor_to_school")
+            .select("id")
+            .eq("doctor_id", doctor_id)
+            .eq("school_id", school_id)
+            .execute()
+        )
+        if not d2s_res.data:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"El médico con ID {doctor_id} no está vinculado a tu escuela."
+            )
+
+        # Actualizar a ACTIVO (2)
+        update_res = (
+            supabase.table("doctor_to_school")
+            .update({"status": 2})
+            .eq("doctor_id", doctor_id)
+            .eq("school_id", school_id)
+            .execute()
+        )
+        
+        return {"message": "El médico ha sido activado exitosamente."}
 
     # ──────────────────────────────────────────────────────────
     # GET - Detalle de un caso médico específico
@@ -894,10 +1239,34 @@ class SchoolAdminService:
         # Si el estudiante no pertenece a la escuela del administrador, get_student_detail lanzará un 403.
         student_full_detail = self.get_student_detail(user_id=user_id, student_id=student_id)
 
-        # 3. Empaquetar y retornar toda la información
+        # 3. Obtener información del doctor
+        doctor_info = None
+        if medical_case.get("doctor_id"):
+            doc_res = (
+                supabase.table("doctor")
+                .select("doc_id, user(id, name, lastname)")
+                .eq("doc_id", medical_case["doctor_id"])
+                .execute()
+            )
+            if doc_res.data:
+                doc_data = doc_res.data[0]
+                user_data = doc_data.get("user") or {}
+                doctor_info = {
+                    "id": doc_data["doc_id"],
+                    "name": user_data.get("name"),
+                    "lastname": user_data.get("lastname")
+                }
+
+        # 4. Limpiar case_info (quitar IDs)
+        case_info = medical_case.copy()
+        case_info.pop("student_id", None)
+        case_info.pop("doctor_id", None)
+
+        # 5. Empaquetar y retornar toda la información
         return {
-            "case_info": medical_case,
+            "case_info": case_info,
             "student_info": student_full_detail.get("student"),
+            "doctor_info": doctor_info,
             "representatives": student_full_detail.get("representatives"),
             "health_context": student_full_detail.get("health_info")
         }
@@ -1481,35 +1850,36 @@ class SchoolAdminService:
     # GET - Secciones disponibles por categoría y nivel
     # ──────────────────────────────────────────────────────────
 
-    def get_sections_by_category_and_level(self, user_id: int, category_id: int, level: int) -> dict:
+    def get_sections_by_category_and_level(self, user_id: int, category_id: int, level: int, active: bool = False) -> dict:
         school_id = self._get_school_id_for_admin(user_id)
 
-        ay_res = (
-            supabase.table("academic_year")
-            .select("id, name")
-            .eq("is_current", True)
-            .eq("is_deleted", False)
-            .limit(1)
-            .execute()
-        )
-        if not ay_res.data:
-            raise HTTPException(
-                status_code=404,
-                detail="No hay un año académico vigente configurado en el sistema."
-            )
-        academic_year_id = ay_res.data[0]["id"]
-
-        rows_res = (
+        query = (
             supabase.table("classroom")
             .select("id, section")
             .eq("school_id", school_id)
-            .eq("academic_year_id", academic_year_id)
             .eq("category", category_id)
             .eq("level", level)
             .eq("is_deleted", False)
-            .order("section")
-            .execute()
         )
+
+        if active:
+            ay_res = (
+                supabase.table("academic_year")
+                .select("id, name")
+                .eq("is_current", True)
+                .eq("is_deleted", False)
+                .limit(1)
+                .execute()
+            )
+            if not ay_res.data:
+                raise HTTPException(
+                    status_code=404,
+                    detail="No hay un año académico vigente configurado en el sistema."
+                )
+            academic_year_id = ay_res.data[0]["id"]
+            query = query.eq("academic_year_id", academic_year_id)
+
+        rows_res = query.order("section").execute()
 
         items = [
             {
