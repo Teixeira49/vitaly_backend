@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, UploadFile, File
 
 from app.api.deps import get_current_admin_escuela
 from app.schemas.responses import APIResponse
-from app.schemas.user import UserUpdate
+from app.schemas.user import UserUpdate, UserPhotoResponse
 from app.services.school_admin_service import school_admin_service
 
 router = APIRouter()
@@ -48,6 +48,78 @@ def update_my_profile(
         payload=payload.model_dump(exclude_unset=True)
     )
     return APIResponse(data=result, message="Perfil actualizado exitosamente")
+
+
+@router.post(
+    "/profile/photo",
+    response_model=APIResponse[UserPhotoResponse],
+    summary="Subir foto de perfil",
+    description="Sube una imagen al bucket de ImageKit.io y actualiza la URL en el perfil del usuario autenticado."
+)
+async def upload_my_profile_photo(
+    file: UploadFile = File(..., description="Archivo de imagen (JPEG, PNG o WebP, máx. 5MB)"),
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Sube y actualiza la foto de perfil del administrador de escuela autenticado.
+
+    Multi-tenancy:
+        El usuario afectado se deriva exclusivamente del token JWT (admin_payload['sub']).
+        No acepta ni confía en identificadores enviados en el cuerpo.
+
+    RBAC:
+        Requiere rol admin_escuela autenticado mediante Bearer token.
+
+    Raises:
+        HTTPException(400): Si el archivo no es una imagen válida (JPEG, PNG, WebP) o excede 5MB.
+        HTTPException(500): Si el servicio ImageKit no está configurado en el servidor.
+        HTTPException(502): Si la subida a ImageKit falla por error de pasarela.
+    """
+    user_id = int(admin_payload["sub"])
+    file_bytes = await file.read()
+    result = school_admin_service.upload_my_profile_photo(
+        user_id=user_id,
+        file_bytes=file_bytes,
+        filename=file.filename or "profile.jpg",
+        content_type=file.content_type or ""
+    )
+    return APIResponse(
+        success=True,
+        data=UserPhotoResponse(**result),
+        message="Foto de perfil subida y actualizada exitosamente"
+    )
+
+
+@router.delete(
+    "/profile/photo",
+    response_model=APIResponse[UserPhotoResponse],
+    summary="Eliminar foto de perfil",
+    description="Elimina la foto de perfil del administrador autenticado, estableciendo photo_url en null."
+)
+def delete_my_profile_photo(
+    admin_payload: dict = Depends(get_current_admin_escuela)
+):
+    """
+    Elimina la foto de perfil del administrador de escuela autenticado.
+
+    Multi-tenancy:
+        El usuario afectado se deriva exclusivamente del token JWT (admin_payload['sub']).
+        No acepta ni confía en identificadores enviados en el cuerpo.
+
+    RBAC:
+        Requiere rol admin_escuela autenticado mediante Bearer token.
+
+    Raises:
+        HTTPException(400): Si no se pudo actualizar el registro en la base de datos.
+    """
+    user_id = int(admin_payload["sub"])
+    result = school_admin_service.delete_my_profile_photo(user_id=user_id)
+    return APIResponse(
+        success=True,
+        data=UserPhotoResponse(**result),
+        message="Foto de perfil eliminada exitosamente"
+    )
+
 
 
 # ──────────────────────────────────────────────────────────

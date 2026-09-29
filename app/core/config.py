@@ -1,7 +1,7 @@
 import os
 from pydantic_settings import BaseSettings
 from functools import lru_cache
-from typing import Dict
+from typing import Dict, Optional
 
 class Settings(BaseSettings):
     """Application settings defined dynamically."""
@@ -10,6 +10,12 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "default-insecure-secret-key"  # Override in production
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     API_V1_STR: str = "/api/v1"
+
+    # Configuración de ImageKit.io para almacenamiento de archivos y fotos de perfil
+    IMAGEKIT_PUBLIC_KEY: Optional[str] = None
+    IMAGEKIT_PRIVATE_KEY: Optional[str] = None
+    IMAGEKIT_URL_ENDPOINT: Optional[str] = None
+
 
     # Classroom level limits per category_id.
     # Keys are the category_id values stored in the DB:

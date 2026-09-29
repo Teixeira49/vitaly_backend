@@ -1,6 +1,8 @@
 from datetime import date, timedelta
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from app.core.database import supabase
+from app.services.imagekit_service import imagekit_service
+
 
 _MONTH_LABELS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 
@@ -84,6 +86,7 @@ class SchoolAdminService:
         user_info["address"] = user_info.get("address") or "Dirección desconocida"
         user_info["biography"] = user_info.get("biography") or "Sin biografía"
         user_info["identity_number"] = user_info.get("identity_number") or "N/A"
+        user_info["photo_url"] = user_info.get("photo_url")
             
         return {
             "user_info": user_info,
@@ -124,6 +127,107 @@ class SchoolAdminService:
             raise HTTPException(status_code=400, detail="No se pudo actualizar el perfil.")
 
         return self.get_my_profile(user_id)
+
+    # ──────────────────────────────────────────────────────────
+    # POST - Subir Foto de Perfil a ImageKit
+    # ──────────────────────────────────────────────────────────
+
+    def upload_my_profile_photo(
+        self,
+        user_id: int,
+        file_bytes: bytes,
+        filename: str,
+        content_type: str
+    ) -> dict:
+        """Sube la foto de perfil del usuario a ImageKit y actualiza photo_url en la BD.
+
+        Args:
+            user_id (int): Identificador del usuario en la tabla 'user'.
+            file_bytes (bytes): Contenido binario del archivo de imagen.
+            filename (str): Nombre del archivo original.
+            content_type (str): MIME-type del archivo recibido.
+
+        Returns:
+            dict: Diccionario con la clave 'photo_url' y la URL generada.
+
+        Raises:
+            HTTPException: 400 si el archivo no es una imagen válida o excede 5MB.
+            HTTPException: 500 si ImageKit no está configurado.
+            HTTPException: 502 si falla la subida a ImageKit.
+        """
+        allowed_types = ["image/jpeg", "image/png", "image/webp", "image/jpg"]
+        if not content_type or content_type.lower() not in allowed_types:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Formato no permitido ({content_type}). Solo se admiten imágenes JPEG, PNG o WebP."
+            )
+
+        max_size = 5 * 1024 * 1024  # 5 MB
+        if len(file_bytes) > max_size:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El archivo excede el tamaño máximo permitido de 5 MB."
+            )
+
+        if len(file_bytes) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El archivo de imagen está vacío."
+            )
+
+        photo_url = imagekit_service.upload_profile_image(
+            file_bytes=file_bytes,
+            original_filename=filename,
+            user_id=user_id,
+            folder="/vitaly/profiles"
+        )
+
+        update_res = (
+            supabase.table("user")
+            .update({"photo_url": photo_url})
+            .eq("id", user_id)
+            .execute()
+        )
+
+        if not update_res.data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No se pudo actualizar la foto de perfil en la base de datos."
+            )
+
+        return {"photo_url": photo_url}
+
+    # ──────────────────────────────────────────────────────────
+    # DELETE - Eliminar Foto de Perfil
+    # ──────────────────────────────────────────────────────────
+
+    def delete_my_profile_photo(self, user_id: int) -> dict:
+        """Elimina la foto de perfil del usuario autenticado estableciendo photo_url en None.
+
+        Args:
+            user_id (int): Identificador del usuario en la tabla 'user'.
+
+        Returns:
+            dict: Diccionario con la clave 'photo_url' en None.
+
+        Raises:
+            HTTPException: 400 si no se pudo actualizar el registro en la base de datos.
+        """
+        update_res = (
+            supabase.table("user")
+            .update({"photo_url": None})
+            .eq("id", user_id)
+            .execute()
+        )
+
+        if not update_res.data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No se pudo eliminar la foto de perfil en la base de datos."
+            )
+
+        return {"photo_url": None}
+
 
     # ──────────────────────────────────────────────────────────
     # GET - Students Resume (Métricas)
@@ -980,7 +1084,7 @@ class SchoolAdminService:
         # 4. Obtener usuarios correspondientes a los doctores
         users_res = (
             supabase.table("user")
-            .select("id, name, lastname, gender")
+            .select("id, name, lastname, gender, photo_url")
             .in_("id", user_ids)
             .execute()
         )
@@ -1027,12 +1131,14 @@ class SchoolAdminService:
                 "fullname": full_name,
                 "name": user.get("name"),
                 "lastname": user.get("lastname"),
+                "photo_url": user.get("photo_url"),
                 "specialty": doctor.get("especially"),
                 "medical_license": doctor.get("doc_license_number"),
                 "status": status_map.get(str(d2s.get("status")), "Desconocido"),
                 "experience_years": experience_years,
                 "years_of_experience": years_of_experience
             })
+
 
         return {
             "data": formatted_doctors,

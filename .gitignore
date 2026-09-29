@@ -174,8 +174,10 @@ Thumbs.db
 .agents/
 
 # Project specific ignores
-supabase/
+supabase/*
+!supabase/migrations/
 test_users/
+
 .cursorrules
 hierarchy_views_dashboard.md
 hierarchy_views_frontend_high_level.md
