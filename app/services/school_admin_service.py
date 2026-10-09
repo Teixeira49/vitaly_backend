@@ -1326,6 +1326,10 @@ class SchoolAdminService:
             raise HTTPException(status_code=404, detail=f"No existe un representante activo con ID {parent_id}.")
         
         parent_data = parent_res.data[0]
+        # Never expose credentials or internal storage ids of the nested user row
+        if isinstance(parent_data.get("user"), dict):
+            parent_data["user"].pop("password", None)
+            parent_data["user"].pop("photo_file_id", None)
 
         # 2. Obtener la relación de hijos desde student_representative
         sr_res = (
