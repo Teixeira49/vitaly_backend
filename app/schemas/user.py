@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from datetime import date
 from app.schemas.enums import UserRole
 from typing import Optional
@@ -43,25 +43,32 @@ class ParentRegister(BaseModel):
     occupation: Optional[str] = None
 
 class UserResponse(BaseModel):
-    id: str
-    email: str
-    first_name: str
-    last_name: str
-    birth_date: date
-    is_active: bool
+    id: str = Field(..., description="Identificador único del usuario")
+    email: str = Field(..., description="Correo electrónico del usuario")
+    first_name: str = Field(..., description="Nombre del usuario")
+    last_name: str = Field(..., description="Apellido del usuario")
+    birth_date: date = Field(..., description="Fecha de nacimiento del usuario")
+    is_active: bool = Field(..., description="Indica si la cuenta está activa")
+    photo_url: Optional[str] = Field(None, description="URL pública de la foto de perfil en ImageKit")
     
     class Config:
         from_attributes = True
 
 class UserUpdate(BaseModel):
-    name: Optional[str] = None
-    lastname: Optional[str] = None
-    identity_number: Optional[str] = None
-    birthday: Optional[date] = None
-    gender: Optional[str] = None
-    address: Optional[str] = None
-    biography: Optional[str] = None
+    name: Optional[str] = Field(None, description="Nombre(s) del usuario")
+    lastname: Optional[str] = Field(None, description="Apellido(s) del usuario")
+    identity_number: Optional[str] = Field(None, description="Cédula o número de documento de identidad")
+    birthday: Optional[date] = Field(None, description="Fecha de nacimiento")
+    gender: Optional[str] = Field(None, description="Género del usuario")
+    address: Optional[str] = Field(None, description="Dirección de habitación")
+    biography: Optional[str] = Field(None, description="Biografía o resumen personal")
+    # photo_url is intentionally not updatable here: it is managed only through
+    # the /profile/photo upload and delete endpoints. Unknown fields are ignored.
+
+class UserPhotoResponse(BaseModel):
+    photo_url: Optional[str] = Field(None, description="URL pública de la foto de perfil en ImageKit (o null si fue eliminada)")
 
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
+

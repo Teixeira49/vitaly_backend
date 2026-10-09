@@ -56,3 +56,13 @@ def get_current_representante(payload: dict = Depends(get_current_user_token)) -
             detail="No tienes los permisos suficientes para esta acción. Se requiere rol de representante."
         )
     return payload
+
+def get_current_doctor(payload: dict = Depends(get_current_user_token)) -> dict:
+    role = payload.get("role")
+    if role != UserRole.DOCTOR.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes los permisos suficientes para esta acción. Se requiere rol de doctor."
+        )
+    return payload
+
