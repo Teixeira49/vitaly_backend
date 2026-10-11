@@ -4,12 +4,13 @@ description: "Trigger: revisar PR, review pull request, code review, revisá est
 license: Apache-2.0
 metadata:
   author: Holeekey
-  version: "1.0"
+  owner: vitaly-backend
+  version: "1.1"
 ---
 
 ## Activation Contract
 
-Use this skill when the user asks to review a pull request, diff, or set of changes against an initial description (Jira-ticket-style context). Requires a business/context description of what the PR is supposed to do. If that context is missing, ask for it once before reviewing.
+Use this skill when the user asks to review a pull request, diff, or set of changes against an initial description (e.g. the linked GitHub issue). Requires a business/context description of what the PR is supposed to do. If that context is missing, ask for it once before reviewing.
 
 Do not use for: generating the PR description, writing commits, or unrelated refactors.
 
@@ -31,7 +32,7 @@ Do not use for: generating the PR description, writing commits, or unrelated ref
 2. Check out the PR branch before reviewing so you inspect the real code, not just the diff text — it enables full-context navigation and running tests locally. FIRST verify the working tree is clean (`git status --porcelain`); if it has uncommitted changes or is mid-operation (rebase/merge), STOP and ask the user how to proceed instead of checking out. When clean, switch with `gh pr checkout <number>` (preferred) or `git fetch` + `git checkout <branch>`. If checkout is impossible (detached environment, no local repo, permission), fall back to reviewing the raw diff and note that limitation in the review.
 3. Read the diff and only the surrounding code needed to judge it. Anchor every finding to `path:line` or a named missing behavior.
 4. Draft candidate findings across the three fault families using `references/review-lens.md`.
-5. Run the adversarial confirmation phase (see `references/adversarial-phase.md`): launch two blind judges on the same target and criteria. If `jd-judge-a`/`jd-judge-b` agents exist, delegate to both in parallel. If not, apply the two-lens fallback yourself (Lens A = "prove this is a real fault"; Lens B = "prove it is theoretical/non-blocking"). Synthesize into the verdict table: `Confirmed`, `Suspect`, `Escalate`, `INFO`.
+5. Run the adversarial confirmation phase (see `references/adversarial-phase.md`): launch two blind judges on the same target and criteria. Delegate in parallel if specialized adversarial review subagents exist; otherwise, apply the inline two-lens fallback yourself (Lens A = "prove this is a real fault"; Lens B = "prove it is theoretical/non-blocking"). Synthesize into the verdict table: `Confirmed`, `Suspect`, `Escalate`, `INFO`.
 6. For each surviving finding, emit BOTH blocks (see Output Contract): reviewer explanation (cause→effect, non-technical) and agent explanation (code-oriented, for follow-up sessions). Mark its adversarial status.
 7. Present findings to the reviewer for deliberation. Ask them to confirm or discard each one. Wait.
 8. After deliberation, emit the final verdict block using only confirmed findings.
@@ -70,5 +71,7 @@ Each unmet criterion and each blocker MUST itself follow the dual `Para revisor`
 
 ## References
 
-- `references/review-lens.md` — checklist of the three fault families and severity mapping.
+- `references/review-lens.md` — checklist of the three fault families, severity mapping, and Vitaly gates.
 - `references/adversarial-phase.md` — two-judge confirmation: delegation prompts, two-lens fallback, and synthesis rules.
+- Skill `fastapi-code-review` — Vitaly backend stack review gates (G1-G8: auth, tenant isolation, APIResponse, sync handlers, contract parity).
+- Rule `.agents/rules/pull-request.md` — target branch (`development` / `main`) and PR format for Vitaly.

@@ -4,8 +4,8 @@ Purpose: confirm criteria before the reviewer deliberates. Two blind judges asse
 
 ## When to delegate vs. fallback
 
-- If sub-agents `jd-judge-a` and `jd-judge-b` exist → delegate both IN PARALLEL, same prompt, do not review yourself.
-- If they do NOT exist → apply the two-lens fallback inline: run Lens A and Lens B as two separate honest passes, then synthesize as if they were two judges.
+- If dedicated adversarial review subagents exist → delegate both IN PARALLEL with the same prompt.
+- By default (no external judges configured) → apply the two-lens fallback inline: run Lens A and Lens B as two separate honest passes, then synthesize as if they were two judges.
 
 ## Judge prompt (both judges, identical)
 
