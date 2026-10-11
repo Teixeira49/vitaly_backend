@@ -4,7 +4,8 @@ description: "Plan commits as reviewable work units. Trigger: implementation, co
 license: Apache-2.0
 metadata:
   author: gentleman-programming
-  version: "1.0"
+  owner: vitaly-backend
+  version: "1.1"
 ---
 
 ## When to Use
@@ -19,6 +20,26 @@ Use it for:
 - Keeping reviewer cognitive load healthy.
 - Applying SDD tasks without accidentally producing a PR above 400 changed lines.
 
+## Commit Message Format
+
+Source of truth: [`.agents/rules/commit-conventions.md`](../../rules/commit-conventions.md).
+Every commit uses **Conventional Commits with gitmoji** (emoji first, mandatory type → emoji table):
+
+```text
+<emoji> type(scope): subject
+```
+
+| type | emoji | type | emoji |
+|------|-------|------|-------|
+| `feat` | ✨ | `perf` | ⚡ |
+| `fix` | 🐛 | `test` | ✅ |
+| `docs` | 📝 | `build` | 👷 |
+| `style` | 💄 | `ci` | 💚 |
+| `refactor` | ♻️ | `chore` | 🔧 |
+| `revert` | ⏪ | | |
+
+If this table and the rule ever disagree, the rule wins.
+
 ## Critical Rules
 
 | Rule | Requirement |
@@ -30,6 +51,7 @@ Use it for:
 | Tell a story | A reviewer should understand why each commit exists from its diff and message. |
 | Future PR-ready | Each commit should be a candidate chained PR when the change grows. |
 | SDD workload guard | If SDD tasks forecast a >400-line change, group commits into chained PR slices before implementation. |
+| Independent repo commits | Never mix frontend and backend changes in a single commit (`cross-repo-e2e` rule). |
 
 ## Work Unit Checklist
 
@@ -45,10 +67,12 @@ Before committing, confirm:
 
 | Weak split | Better work-unit split |
 |------------|------------------------|
-| `add models` | `feat(auth): add token validation domain model and tests` |
-| `add services` | `feat(auth): wire token validation into login flow` |
-| `add tests` | Tests included with each behavior commit |
+| `add schemas` | `✨ feat(students): add StudentRead schema and list endpoint with tests` |
+| `add services` | `✨ feat(students): scope student queries by school_id` |
+| `add tests` | Tests included with each behavior commit (`✅ test(...)` only for test-only changes) |
 | `update docs` | Docs included with the user-facing change they explain |
+| `fix stuff` | `🐛 fix(metrics): return empty list instead of 404 when no records exist` |
+| `cleanup` | `♻️ refactor(services): extract BMI calculation into helper` |
 
 ## PR Relationship
 
@@ -56,7 +80,7 @@ Use work-unit commits as the foundation for chained PRs:
 
 1. Build the smallest independent work unit.
 2. Include verification for that unit.
-3. Commit it with a Conventional Commit message.
+3. Commit it with a gitmoji Conventional Commit message (`✨ feat(scope): subject`).
 4. If the PR approaches 400 changed lines, promote commits or groups of commits into chained PRs.
 
 ## SDD Relationship
@@ -83,4 +107,7 @@ git diff --cached --stat
 
 # Check recent commit style
 git log --oneline -5
+
+# Example commit (header format from .agents/rules/commit-conventions.md)
+git commit -m "✨ feat(students): add paginated student list endpoint"
 ```
