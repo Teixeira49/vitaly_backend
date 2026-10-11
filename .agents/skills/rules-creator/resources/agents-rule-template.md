@@ -1,27 +1,31 @@
-# [Domain Name] Guidelines & Constraints
+# [Nombre del Rol o Dominio]
 
-## Scope
-Defines operating boundaries and implementation standards for [Domain/Module].
+> Plantilla para guías sin frontmatter: archivos de rol en `.agents/roles/` o
+> secciones de `.agents/AGENTS.md`. Las reglas con alcance por archivos usan
+> `rule-template.md` (frontmatter + 5 secciones) en `.agents/rules/`.
 
-## Boundaries & Constraints
-- **Multi-Tenancy / Security:** [Specific boundary, e.g., never trust user input for tenant scoping]
-- **Prohibited Patterns:** [E.g., no raw queries, no circular imports, no untyped return values]
+## Alcance
+Define los límites operativos y los estándares de implementación para [Dominio/Módulo].
 
-## Coding Conventions
-- **Layering:** Route -> Service -> Repository / ORM.
-- **Responses:** Standard envelope wrapper required.
-- **Documentation:** Google-style docstrings with Args, Returns, and Raises.
+## Límites y Restricciones
+- **Multi-tenancy / Seguridad:** [ej. nunca confiar en el `school_id` enviado por el cliente]
+- **Patrones Prohibidos:** [ej. validaciones de rol inline, respuestas sin `APIResponse`]
 
-## Examples
-### ❌ Prohibited
+## Convenciones
+- **Capas:** Endpoint (`app/api/v1/endpoints/`) -> Servicio (`app/services/`) -> cliente supabase-py.
+- **Respuestas:** Envelope `APIResponse[T]` obligatorio.
+- **Documentación:** Docstrings estilo Google con `Args`, `Returns` y `Raises`.
+
+## Ejemplos
+### ❌ Prohibido
 ```python
-# Unsafe or non-standard implementation
+# Implementación insegura o fuera de estándar
 ```
 
-### ✅ Approved
+### ✅ Aprobado
 ```python
-# Standard compliant implementation
+# Implementación conforme al estándar
 ```
 
-## Verification
-- Validation commands or automated test suites to run before finalizing changes.
+## Verificación
+- Comandos de validación o suites de tests a ejecutar antes de cerrar el cambio.
