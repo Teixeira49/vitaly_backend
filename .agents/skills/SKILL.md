@@ -26,3 +26,4 @@ This file catalogues all custom skills registered in the project.
 - **chained-pr**: Split oversized PRs (>400 lines) into chained reviewable slices. (dir: `.agents/skills/chained-pr/`)
 - **issue-creation**: Standardized GitHub issue creation with templates and triage status. (dir: `.agents/skills/issue-creation/`)
 - **work-unit-commits**: Plan reviewable atomic work units and commit organization. (dir: `.agents/skills/work-unit-commits/`)
+- **documentation**: Structure and author technical documentation following the Diátaxis framework (tutorials, how-to, reference, explanation). (dir: `.agents/skills/documentation/`)
