@@ -83,5 +83,17 @@ A partir de la emisión del Issue #8, todo código nuevo o modificado debe incor
 - **Servicios (`app/services/`):** Docstrings estilo Google (`Args`, `Returns`, `Raises`).
 - **Esquemas (`app/schemas/`):** Enriquecimiento con `Field(description=...)` para documentación OpenAPI (`/docs`).
 
+### 5. Ecosistema Multi-Repositorio (Frontend & Backend)
+Vitaly opera con una arquitectura desacoplada de dos repositorios hermanos:
+- **Backend (Este repositorio):** API REST en FastAPI, SQLAlchemy, PostgreSQL/Supabase.
+- **Frontend (Repositorio hermano):** Ubicado de forma relativa en `../vitaly-care-for-families` (SPA en React 18 + TypeScript + Vite + Tailwind + TanStack Query).
+
+**Directivas para orquestación End-to-End (E2E):**
+1. **Resolución Relativa Estricta:** Resuelve siempre el repositorio hermano mediante `../vitaly-care-for-families` o `$(git rev-parse --show-toplevel)/../vitaly-care-for-families`. Queda **terminantemente prohibido** incluir rutas absolutas del entorno local del desarrollador (`/Users/...`, `C:\...`).
+2. **Autoridad de Esquemas:** El backend es la única fuente de la verdad para contratos de datos. Cualquier cambio en esquemas Pydantic (`*Read`, `*Create`) debe coordinarse con las interfaces TypeScript correspondientes en el frontend.
+3. **Independencia de Commits:** Cada repositorio gestiona su propio historial de Git. NUNCA mezcles cambios de ambos repositorios en un único commit.
+
 ---
 *Este documento es la ley suprema del backend. Cualquier desviación debe ser justificada por el Backend Architect.*
+
+
