@@ -1,10 +1,10 @@
 ---
-description: Nomenclatura y base de las ramas de git, derivadas de la tarea de Jira. Aplica cada vez que se vaya a crear una rama nueva en este repositorio.
+description: Nomenclatura y base de las ramas de git, derivadas del issue de GitHub. Aplica cada vez que se vaya a crear una rama nueva en este repositorio.
 ---
 
 # Nomenclatura de Ramas
 
-Esta regla define cómo nombrar y desde dónde crear cada rama. La base de la rama y el nombre derivan de la tarea de Jira, salvo en hotfixes y en requerimientos sin ticket.
+Esta regla define cómo nombrar y desde dónde crear cada rama. El nombre de la rama deriva del issue de GitHub (Vitaly usa **GitHub Issues** como gestor de tareas), salvo en requerimientos sin issue.
 
 ## Paso 0 — Leer la configuración
 
@@ -32,29 +32,29 @@ Donde `<base>` es `productionBranch` para hotfix, o `baseBranch` en cualquier ot
 
 ## Nomenclatura
 
-### Caso 1 — Hay ticket de Jira
+### Caso 1 — Hay issue de GitHub
 
 ```
-[tipo]/[codigo-tarea][-intento]
+[tipo]/GH-<n>[-intento]
 ```
 
 - **tipo**: `fix`, `feat`, `hotfix`, etc. (en minúsculas), según la naturaleza del trabajo.
-- **codigo-tarea**: el código del ticket de Jira tal cual, ej. `EWEB-874`, `EMPW-347`, `EPLT-19`.
+- **GH-<n>**: prefijo fijo `GH-` seguido del número del issue de GitHub (sin `#`), ej. `GH-12` para el issue `#12`. Verifica que el issue existe con `gh issue view <n> --json number,title,state`.
 - **intento**: ver "Regla del intento". Se omite si es la primera vez.
 
 Ejemplos:
 ```
-fix/EWEB-870
-feat/EMPW-456
-feat/EMPW-456-1
+fix/GH-7
+feat/GH-12
+feat/GH-12-1
 ```
 
-### Caso 2 — No hay ticket para el requerimiento
+### Caso 2 — No hay issue para el requerimiento
 
-Si no existe un ticket de Jira para el trabajo, **pregunta al usuario qué desea realizar** para determinar el `tipo` de rama. Luego usa:
+Si no existe un issue de GitHub para el trabajo (y el usuario no quiere crearlo primero con el skill `vitaly-issue`), **pregunta al usuario qué desea realizar** para determinar el `tipo` de rama. Luego usa:
 
 ```
-[tipo]/[nombre-git-desarrollador][fecha-de-hoy][-intento]
+[tipo]/[nombre-git-desarrollador]-[fecha-de-hoy][-intento]
 ```
 
 - **tipo**: igual que arriba (`fix`, `feat`, etc.), definido a partir de lo que el usuario indique.
@@ -70,7 +70,7 @@ fix/javier-teixeira-2026-06-16-1
 
 ## Regla del intento
 
-El sufijo `-intento` se agrega **solo si ya existe una rama con exactamente el mismo nombre base**. La numeración empieza en `1` y crece de uno en uno hasta encontrar un nombre libre. Aplica igual en ambos casos (con ticket y sin ticket).
+El sufijo `-intento` se agrega **solo si ya existe una rama con exactamente el mismo nombre base**. La numeración empieza en `1` y crece de uno en uno hasta encontrar un nombre libre. Aplica igual en ambos casos (con issue y sin issue).
 
 Para verificar existencia, comprueba ramas locales y remotas:
 
@@ -84,9 +84,9 @@ Procedimiento:
 2. Si no existe ninguna rama con ese nombre exacto → úsalo tal cual.
 3. Si ya existe → prueba `<nombre-base>-1`, luego `<nombre-base>-2`, etc., hasta encontrar uno que no exista. Usa el primero libre.
 
-Ejemplo: si `feat/EMPW-456` ya existe, la nueva rama será `feat/EMPW-456-1`; si esa también existe, `feat/EMPW-456-2`.
+Ejemplo: si `feat/GH-12` ya existe, la nueva rama será `feat/GH-12-1`; si esa también existe, `feat/GH-12-2`.
 
 ## Notas
 
 - El `tipo` de rama debe ser coherente con el `type` que luego usarás en commits y en el título de la PR (ver reglas de commits y de pull requests).
-- No incluyas el título descriptivo del ticket en el nombre de la rama: solo el código de tarea. El contexto descriptivo va en la PR, no en la rama.
+- No incluyas el título descriptivo del issue en el nombre de la rama: solo `GH-<n>`. El contexto descriptivo va en la PR, no en la rama.

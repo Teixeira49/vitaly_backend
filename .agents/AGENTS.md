@@ -54,6 +54,7 @@ Para asegurar una transferencia sin pérdida de contexto, el Orquestador y los S
 - **Reglas** (`.agents/rules/`): restricciones infranqueables. Cada estándar del Vademécum resume su regla; el detalle vive en ella.
 - **Skills** (`.agents/skills/`): el *cómo* práctico (Capabilities Registry). Las skills `vitaly-*` son las propias del proyecto y prevalecen sobre skills globales homónimas.
 - **Precedencia ante conflicto:** `AGENTS.md` > `.agents/rules/` > `.agents/skills/` > código legado. El código legado tolerado no es precedente para código nuevo (ver skill `vitaly-architecture`).
+- **Skills genéricas** (`fastapi`, `async-python-patterns`, etc.): sus ejemplos con `async def` no aplican a este stack. Handlers y servicios son `def` síncronos mientras se use supabase-py (bloqueante); en código nuevo, las dependencias usan `Annotated[...]` ([`rbac-enforcement.md`](rules/rbac-enforcement.md)).
 
 ---
 

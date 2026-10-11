@@ -1,10 +1,10 @@
 ---
-description: Flujo, título y descripción para crear Pull Requests, integrando la tarea de Jira y los commits de la rama. Aplica cada vez que se vaya a preparar o disparar una PR en este repositorio.
+description: Flujo, título y descripción para crear Pull Requests, integrando el issue de GitHub y los commits de la rama. Aplica cada vez que se vaya a preparar o disparar una PR en este repositorio.
 ---
 
 # Pull Requests
 
-Esta regla define cómo preparar y disparar Pull Requests. Cubre tres cosas: el **nivel de disparo** (cuánta autonomía tiene la IA para subir la PR), el **título** y la **descripción**. La descripción se construye a partir de la **tarea de Jira** y de los **commits de la rama**.
+Esta regla define cómo preparar y disparar Pull Requests. Cubre tres cosas: el **nivel de disparo** (cuánta autonomía tiene la IA para subir la PR), el **título** y la **descripción**. La descripción se construye a partir del **issue de GitHub** (Vitaly usa **GitHub Issues** como gestor de tareas, no Jira) y de los **commits de la rama**.
 
 ## Paso 0 — Leer la configuración
 
@@ -19,50 +19,57 @@ De ahí se obtienen:
 - `triggerMode`: nivel de disparo (`"manual"` | `"ask"` | `"auto"`).
 - `draftsDir`: carpeta donde se guardan los markdown de PR. Por defecto `docs/pull-requests/`.
 - `reviewers`: lista de reviewers candidatos del equipo (puede estar vacía).
-- `jiraCloudId`: cloud ID de Atlassian/Jira del proyecto (para resolver la tarea).
 - `baseBranch`: rama destino por defecto de las PR (todo lo que no sea hotfix). Por defecto `development`.
 - `productionBranch`: rama de producción, destino de los hotfixes. Por defecto `main`.
 
-Si el archivo no existe, asume `triggerMode: "manual"`, `draftsDir: "docs/pull-requests/"`, `reviewers: []`, `jiraCloudId` sin definir, `baseBranch: "development"` y `productionBranch: "main"`, e informa al usuario de que conviene crearlo.
+Si el archivo no existe, asume `triggerMode: "manual"`, `draftsDir: "docs/pull-requests/"`, `reviewers: []`, `baseBranch: "development"` y `productionBranch: "main"`, e informa al usuario de que conviene crearlo.
 
 ## Información requerida
 
 Antes de ejecutar, verifica que tengas:
 
-1. **Código de la tarea en Jira** — ejemplo: `EWEB-875`.
-2. **Nombre de la rama** — ejemplo: `fix/EWEB-875-special-contributor-modal`. Si no se indica, usa la rama actual (`git branch --show-current`).
+1. **Número del issue de GitHub** — ejemplo: `12` (issue `#12`, referenciado como `GH-12` en ramas y títulos).
+2. **Nombre de la rama** — ejemplo: `fix/GH-12`. Si no se indica, usa la rama actual (`git branch --show-current`).
 
-Si falta el código de tarea, solicítalo antes de continuar.
+Si falta el número de issue, solicítalo antes de continuar. Si el usuario no tiene issue, propón crearlo primero con el skill `vitaly-issue`; si decide continuar sin issue, omite `GH-<n>` y `Closes #<n>` y usa la rama del caso sin issue (ver `branch-naming.md`).
 
-## Paso 1 — Obtener la tarea de Jira
+## Paso 1 — Obtener el issue de GitHub
 
-Usa la herramienta MCP de Atlassian (`getJiraIssue`) con el `jiraCloudId` de `pr-config.json` y el código de tarea proporcionado. Extrae:
+Ejecuta vía Bash con GitHub CLI:
 
-- Título (`summary`)
-- Descripción (`description`)
-- Tipo de issue (`issuetype.name`)
-- Estado (`status.name`)
+```bash
+gh issue view <n> --json title,body,labels,state
+```
 
-Si no hay conector de Atlassian disponible o falla la consulta, informa al usuario y pídele que pegue manualmente el título y tipo de la tarea para poder continuar.
+Extrae:
+
+- Título (`title`)
+- Descripción (`body`)
+- Labels (`labels[].name`) — determinan el `type` del título de la PR (ver "Título de la PR")
+- Estado (`state`) — si el issue está `CLOSED`, avisa al usuario antes de continuar
+
+Si `gh` no está disponible o falla la consulta, informa al usuario y pídele que pegue manualmente el título y las labels del issue para poder continuar.
 
 ## Paso 2 — Obtener los commits de la rama
 
 Ejecuta vía Bash:
 
 ```bash
-git log main..<nombre_de_rama> --oneline --no-merges
+git log <rama-destino>..<nombre_de_rama> --oneline --no-merges
 ```
+
+Donde `<rama-destino>` es la base de la PR: `productionBranch` si la rama es `hotfix/`, o `baseBranch` en cualquier otro caso (ver "Rama destino (base) de la PR").
 
 Usa los mensajes de commit para entender qué cambios se realizaron y redactar la descripción.
 
 ## Paso 3 — Resolver el template de descripción
 
-Si existe `.github/pull_request_template.md` en el repo, **léelo y úsalo como base** (fuente única de verdad). Si no existe, usa la plantilla embebida en la sección "Descripción de la PR" de esta regla.
+Este repositorio **no** tiene `.github/pull_request_template.md`, por lo que se usa la plantilla embebida en la sección "Descripción de la PR" de esta regla. Si en el futuro se agrega ese archivo, **léelo y úsalo como base** (fuente única de verdad).
 
-**Secciones obligatorias (siempre presentes).** Independientemente de lo que traiga `.github/pull_request_template.md` —que en este repo es mínimo: solo `## Description` y `## Type of Change`—, la PR generada **debe incluir siempre** estas cuatro secciones, en este orden. Si el template base no las trae, **agrégalas** al final del cuerpo:
+**Secciones obligatorias (siempre presentes).** Independientemente de la plantilla base que se use, la PR generada **debe incluir siempre** estas cuatro secciones, en este orden. Si el template base no las trae, **agrégalas** al final del cuerpo:
 
-1. `## Description`
-2. `## Type of Change`
+1. `## Descripción`
+2. `## Tipo de cambio`
 3. `## ¿Cómo se ha probado esto?` (incluyendo el bloque **Configuración de prueba**)
 4. `## Lista de Verificación`
 
@@ -76,7 +83,7 @@ Independientemente del modo, **siempre** generas un archivo markdown con el cont
 <draftsDir>/<nombre-de-la-rama>.md
 ```
 
-Ejemplo: rama `fix/EWEB-875-special-contributor-modal` → `docs/pull-requests/fix-EWEB-875-special-contributor-modal.md` (sustituye `/` por `-` en el nombre del archivo).
+Ejemplo: rama `fix/GH-12` → `docs/pull-requests/fix-GH-12.md` (sustituye `/` por `-` en el nombre del archivo).
 
 ## Paso 5 — Comportamiento según `triggerMode`
 
@@ -114,33 +121,34 @@ Donde `<rama-destino>` es `productionBranch` para hotfix o `baseBranch` en cualq
 
 ## Título de la PR
 
-> Referencia completa con ejemplos: `docs/contributing/PR_TITLE_GUIDE.md`
-
 Formato:
 
 ```
-[<icon> <type>: <jira-ticket>] - <jira-ticket-title>
+[<icon> <type>: GH-<n>] - <titulo-del-issue>
 ```
 
-Infiere `type` desde el `issuetype.name` de Jira usando este mapeo. Si no es claro, pregunta al usuario.
+Infiere `type` desde las **labels del issue** de GitHub usando este mapeo. Si el issue tiene varias labels de tipo, usa la primera fila que coincida (de arriba hacia abajo). Si ninguna coincide o no es claro, pregunta al usuario.
 
-| Tipo Jira | Type | Icon |
-|-----------|------|------|
-| New Feature / Historia | `Feat` | ✨ |
-| Bug / Error | `Fix` | 🛠️ |
-| Hotfix / Emergencia en producción | `Hotfix` | 🚨 |
-| Improvement / Mejora | `Improve` | 🚀 |
-| Refactor | `Refactor` | 🧹 |
-| Docs / Documentación | `Doc` | 📝 |
-| Chore / Tarea | `Chore` | 🗑️ |
-| Build / Config | `Build` | ✅ |
-| Test / Pruebas | `Test` | 🧪 |
-| Logs / Debug | `Logs` | 🔇 |
-| Breaking Change | `Break` | ❌ |
+| Label(s) del issue | Type | Icon |
+|--------------------|------|------|
+| `breaking-change` | `Break` | ❌ |
+| `hotfix` (emergencia en producción) | `Hotfix` | 🚨 |
+| `security` | `Fix` | 🛠️ |
+| `bug` | `Fix` | 🛠️ |
+| `enhancement` | `Feat` | ✨ |
+| `improvement` | `Improve` | 🚀 |
+| `tech-debt` / `refactor` | `Refactor` | 🧹 |
+| `documentation` | `Doc` | 📝 |
+| `chore` | `Chore` | 🗑️ |
+| `build` / `ci` | `Build` | ✅ |
+| `test` | `Test` | 🧪 |
+| `logs` | `Logs` | 🔇 |
+
+Las labels de prioridad (`P0`..`P3`) y de área (`api`, `services`, `schemas`, `agents`) no determinan el `type`.
 
 Reglas:
-- La clave del ticket de Jira (ej. `EWEB-816`) **siempre** se incluye; enlaza la PR con el issue tracker.
-- Usa el título del ticket de Jira tal cual cuando sea claro, o acórtalo si es muy largo. Mantén la descripción breve por debajo de ~60 caracteres y en el mismo idioma que el título de la tarea en Jira.
+- La referencia `GH-<n>` (ej. `GH-12`) **siempre** se incluye en el título; el enlace real con el issue lo hace `Closes #<n>` en la descripción.
+- Usa el título del issue tal cual cuando sea claro (sin el prefijo `[<icon> <Tipo>]` del issue), o acórtalo si es muy largo. Mantén la descripción breve por debajo de ~60 caracteres y en el mismo idioma que el título del issue.
 - Mantén el título completo por debajo de **72 caracteres** cuando sea posible.
 - `Hotfix` se reserva para parches de emergencia; los bug fixes normales usan `Fix`.
 
@@ -148,30 +156,28 @@ Antes de guardar el archivo, **muestra la sugerencia de título por chat**:
 
 ```
 💡 Título sugerido para la PR:
-[<icon> <type>: <jira-ticket>] - <descripción-breve>
+[<icon> <type>: GH-<n>] - <descripción-breve>
 ```
 
 Si el usuario desea modificarlo, aplica los cambios antes de continuar.
 
 Ejemplos:
 ```
-[✨ Feat: EWEB-816] - Solicitudes de reserva duplicadas en alojamiento de espacio completo
-[🛠️ Fix: EWEB-837] - Día de check-out bloqueado en calendario del anfitrión (automatic-block)
-[📝 Doc: EWEB-811] - Actualizar textos de Atención al Cliente › Anfitriones
+[✨ Feat: GH-12] - Registro de métricas de salud por año académico
+[🛠️ Fix: GH-13] - Listado de estudiantes devuelve 404 con salón vacío
+[📝 Doc: GH-14] - Documentar endpoints de administración de escuela
 ```
 
 ## Descripción de la PR
 
-> Ejemplo de PR bien completada: `docs/contributing/pull_request_example.md`
-
-Plantilla base (usa `.github/pull_request_template.md` si existe; si no, esta):
+Plantilla base (embebida; si en el futuro existe `.github/pull_request_template.md`, úsalo como base):
 
 ```markdown
-# Descripción
+## Descripción
 
 Incluye un resumen de los cambios y el problema relacionado (en caso de que hubiera uno). Enumere las dependencias necesarias para este cambio.
 
-Tareas realizadas (Agregue los ID de las tareas en ClickUp)
+Closes #<n>
 
 ## Tipo de cambio
 
@@ -183,20 +189,20 @@ Marque con una x dentro de los `[]` los que apliquen
 - [ ] 📝 Actualización de la documentación
 - [ ] 🧹 Code refactoring (modificación de la estructura interna del código sin modificar las APIs)
 - [ ] ✅ Build configuration change (modificación de los archivos para hacer deploy)
-- [ ] 🗑️ Chore (actividades que no modificación la interacción con la app, por ejemplo, modificar el archivo de eslint)
+- [ ] 🗑️ Chore (actividades que no modifican la interacción con la app, por ejemplo, modificar la configuración del linter)
 
 ## ¿Cómo se ha probado esto?
 
-Prueba manual: desplázate a las vistas afectadas y verifica que el cambio esté aplicado. **Adjunta las instrucciones de las pantallas a las que debe navegar quien quiera probar el cambio** (un ítem de checklist por pantalla/flujo, indicando cómo llegar y qué verificar).
+Prueba manual: ejercita los endpoints afectados (desde Swagger `/docs` o un cliente HTTP) y verifica el resultado. **Adjunta los endpoints/flujos que debe ejercitar quien quiera probar el cambio** (un ítem de checklist por endpoint/flujo, indicando método + ruta, rol con el que se autentica y resultado esperado).
 
-- [ ] **<Pantalla/flujo 1>:** <cómo llegar> → <qué verificar>
-- [ ] **<Pantalla/flujo 2>:** <cómo llegar> → <qué verificar>
+- [ ] **<MÉTODO> <ruta 1>** (rol: `<rol>`) → <resultado esperado: status + contenido de `data`>
+- [ ] **<MÉTODO> <ruta 2>** (rol: `<rol>`) → <resultado esperado: status + contenido de `data`>
 
 **Configuración de prueba:**
 
-- Flavor: `development`
-- Target: `lib/main_development.dart`
-- Plataformas: iOS / Android
+- Servidor local: `uvicorn app.main:app --reload`
+- Documentación interactiva: `http://localhost:8000/docs`
+- Pruebas automatizadas: `pytest`
 
 ## Lista de Verificación
 
@@ -212,17 +218,17 @@ Prueba manual: desplázate a las vistas afectadas y verifica que el cambio esté
 - [ ] Las pruebas unitarias nuevas y existentes pasan localmente con mis cambios
 ```
 
-Pautas de llenado (usa la info de Jira + los commits):
-- **Descripción**: resumen claro de los cambios basado en la tarea de Jira y los commits. Cuando aplique, una lista numerada de cambios concretos (qué se corrigió/eliminó/añadió y por qué). Incluye el ID de la tarea (ej. `EWEB-811`).
-- **Tipo de cambio**: marca con `x` solo el/los tipo(s) que correspondan según el issue type de Jira y los cambios reales.
-- **¿Cómo se ha probado esto?**: por defecto es **prueba manual**. Enumera como checklist las **pantallas/flujos concretos** a los que debe navegar quien pruebe el cambio y qué verificar en cada uno; **deriva las pantallas de los cambios reales de la rama** y sustituye los placeholders `<...>`. No dejes los ejemplos.
-- **Configuración de prueba**: por defecto **Flavor `development`**, **Target `lib/main_development.dart`**, **Plataformas iOS / Android**. Ajusta solo si el cambio lo requiere (otro flavor, web, etc.).
+Pautas de llenado (usa la info del issue de GitHub + los commits):
+- **Descripción**: resumen claro de los cambios basado en el issue de GitHub y los commits. Cuando aplique, una lista numerada de cambios concretos (qué se corrigió/eliminó/añadió y por qué). Incluye **siempre** la línea `Closes #<n>` (ej. `Closes #12`) para que GitHub cierre el issue al fusionar la PR. Nota: GitHub solo cierra automáticamente el issue cuando la PR se fusiona en la rama por defecto del repositorio; si la base es `baseBranch` y no es la rama por defecto, el issue se cerrará al llegar el cambio a ella o deberá cerrarse manualmente.
+- **Tipo de cambio**: marca con `x` solo el/los tipo(s) que correspondan según las labels del issue y los cambios reales.
+- **¿Cómo se ha probado esto?**: por defecto es **prueba manual**. Enumera como checklist los **endpoints/flujos concretos** que debe ejercitar quien pruebe el cambio (método + ruta + rol + resultado esperado); **deriva los endpoints de los cambios reales de la rama** y sustituye los placeholders `<...>`. No dejes los ejemplos.
+- **Configuración de prueba**: por defecto **servidor local `uvicorn app.main:app --reload`**, **Swagger en `/docs`** y **`pytest`**. Ajusta solo si el cambio lo requiere (variables de entorno, migraciones previas, etc.).
 - **Lista de Verificación**: incluye **todos** los ítems. Vienen **marcados por defecto** los cuatro que este proyecto cumple siempre —*pautas de estilo*, *auto-revisión*, *código comentado* y *sin nuevas advertencias*—; desmárcalos solo si en el caso concreto no se cumplen. Los demás (dependencias, variables de entorno, documentación, build/lint, pruebas) márcalos con honestidad solo si realmente aplican y se cumplieron; si no aplican, déjalos sin marcar (opcionalmente con la nota *(no aplica)*).
 
 ## Otras configuraciones
 
 ### Labels
-- En modo `auto`: asigna las labels que tengan más sentido lógico con la naturaleza de los cambios (ej. cambios solo en docs → label de documentación; corrección de bug → label de bug). Infiere a partir de los archivos editados, el tipo de issue de Jira y los commits.
+- En modo `auto`: asigna las labels que tengan más sentido lógico con la naturaleza de los cambios (ej. cambios solo en docs → label de documentación; corrección de bug → label de bug). Infiere a partir de los archivos editados, las labels del issue de GitHub y los commits.
 - En modo `ask`: **propón** esas labels en el chat para que el usuario las apruebe junto con la PR.
 
 ### Reviewers
@@ -236,7 +242,7 @@ Usa la herramienta disponible, priorizando **GitHub CLI**:
 
 1. Si `gh` está disponible, usa:
    ```
-   gh pr create --base <rama-destino> --title "<título>" --body-file "<ruta-del-md>" [--label "<label>" ...] [--reviewer "<reviewer>" ...]
+   gh pr create --base <rama-destino> --head <rama-de-trabajo> --title "<título>" --body-file "<ruta-del-md>" [--label "<label>" ...] [--reviewer "<reviewer>" ...]
    ```
    El cuerpo de la PR debe ser el archivo markdown generado (`--body-file`), no texto reescrito. La `<rama-destino>` se determina según la sección "Rama destino (base) de la PR".
 2. Si `gh` no está disponible pero hay un conector MCP de GitHub configurado, úsalo para crear la PR con el mismo título, cuerpo, labels y reviewers.

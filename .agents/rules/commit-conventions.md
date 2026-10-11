@@ -4,7 +4,7 @@ description: Formato obligatorio de mensajes de commit (Conventional Commits + g
 
 # Formato de Commits
 
-Al crear cualquier commit, usa **Conventional Commits con gitmoji**, replicando exactamente el formato de la extensión de VSCode "Conventional Commits" (vivaxy) con su configuración por defecto (`gitmoji: true`, `emojiFormat: "code"`).
+Al crear cualquier commit, usa **Conventional Commits con gitmoji**, replicando exactamente el formato de la extensión de VSCode "Conventional Commits" (vivaxy) con `gitmoji: true` y el emoji como carácter Unicode (`emojiFormat: "emoji"`), no como shortcode (`:sparkles:`).
 
 ## Estructura de la cabecera
 

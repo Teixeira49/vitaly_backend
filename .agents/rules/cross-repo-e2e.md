@@ -26,9 +26,9 @@ alwaysApply: false
 Cuando el usuario solicite implementar una funcionalidad End-to-End desde este repositorio:
 
 1. **Fase 1: Autoridad de Datos (Backend Primero):**
-   - Define o ajusta los modelos SQLAlchemy (`app/models/`).
+   - Define o ajusta el esquema de base de datos mediante una migración en `supabase/migrations/` (siguiendo `database_migration_protocol.md`, con confirmación del usuario) y las consultas supabase-py en `app/services/`.
    - Define los esquemas Pydantic (`*Create`, `*Update`, `*Read`) con `Field(description=...)`.
-   - Crea el endpoint en `app/api/v1/` envuelto con `response_model=APIResponse[SchemaRead]` y asegurado con `Depends(RoleChecker(...))`.
+   - Crea el endpoint en `app/api/v1/` envuelto con `response_model=APIResponse[SchemaRead]` y asegurado con el gate correspondiente de `app/api/deps.py` (ej. `Depends(get_current_admin_escuela)`).
 2. **Fase 2: Verificación de Disponibilidad del Frontend:**
    - Comprueba si el directorio hermano existe de forma relativa:
      ```bash
@@ -63,7 +63,7 @@ fi
 
 ## 5. Verificación & Auto-Corrección
 - **Checklist:**
-  - [ ] El endpoint de FastAPI funciona y pasa sus pruebas (`pytest tests/api/`).
+  - [ ] El endpoint de FastAPI funciona y pasa sus pruebas (`pytest tests/`).
   - [ ] Las interfaces TS en el frontend hermano coinciden con los campos de Pydantic.
   - [ ] Ninguna ruta absoluta del sistema de archivos fue escrita en el repositorio.
 - **Comando de Verificación Backend:** `pytest tests/`
