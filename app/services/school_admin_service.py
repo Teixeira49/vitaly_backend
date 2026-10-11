@@ -1,6 +1,8 @@
 from datetime import date, timedelta
 from fastapi import HTTPException
 from app.core.database import supabase
+from app.services import profile_photo_service
+
 
 _MONTH_LABELS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 
@@ -76,8 +78,8 @@ class SchoolAdminService:
         user_info = admin_data.pop("user", {}) or {}
         school_info = admin_data.pop("school", {}) or {}
         
-        if "password" in user_info:
-            del user_info["password"]
+        user_info.pop("password", None)
+        user_info.pop("photo_file_id", None)
 
         # Manejo de nulos según requerimiento
         user_info["gender"] = user_info.get("gender") or "No especificado"
@@ -124,6 +126,38 @@ class SchoolAdminService:
             raise HTTPException(status_code=400, detail="No se pudo actualizar el perfil.")
 
         return self.get_my_profile(user_id)
+
+    # ──────────────────────────────────────────────────────────
+    # POST - Subir Foto de Perfil a ImageKit
+    # ──────────────────────────────────────────────────────────
+
+    def upload_my_profile_photo(self, user_id: int, file_bytes: bytes, content_type: str) -> dict:
+        """Sube la foto de perfil del usuario a ImageKit y actualiza photo_url en la BD.
+
+        Delega la validación y el ciclo de vida ImageKit/BD en profile_photo_service.
+
+        Returns:
+            dict: Diccionario con la clave 'photo_url' y la URL generada.
+        """
+        return profile_photo_service.upload_profile_photo(
+            user_id=user_id,
+            file_bytes=file_bytes,
+            content_type=content_type,
+            folder=profile_photo_service.SCHOOL_ADMIN_PHOTO_FOLDER,
+        )
+
+    # ──────────────────────────────────────────────────────────
+    # DELETE - Eliminar Foto de Perfil
+    # ──────────────────────────────────────────────────────────
+
+    def delete_my_profile_photo(self, user_id: int) -> dict:
+        """Elimina la foto de perfil del usuario autenticado (BD e ImageKit).
+
+        Returns:
+            dict: Diccionario con la clave 'photo_url' en None.
+        """
+        return profile_photo_service.delete_profile_photo(user_id=user_id)
+
 
     # ──────────────────────────────────────────────────────────
     # GET - Students Resume (Métricas)
@@ -980,7 +1014,7 @@ class SchoolAdminService:
         # 4. Obtener usuarios correspondientes a los doctores
         users_res = (
             supabase.table("user")
-            .select("id, name, lastname, gender")
+            .select("id, name, lastname, gender, photo_url")
             .in_("id", user_ids)
             .execute()
         )
@@ -1027,12 +1061,14 @@ class SchoolAdminService:
                 "fullname": full_name,
                 "name": user.get("name"),
                 "lastname": user.get("lastname"),
+                "photo_url": user.get("photo_url"),
                 "specialty": doctor.get("especially"),
                 "medical_license": doctor.get("doc_license_number"),
                 "status": status_map.get(str(d2s.get("status")), "Desconocido"),
                 "experience_years": experience_years,
                 "years_of_experience": years_of_experience
             })
+
 
         return {
             "data": formatted_doctors,
@@ -1290,6 +1326,10 @@ class SchoolAdminService:
             raise HTTPException(status_code=404, detail=f"No existe un representante activo con ID {parent_id}.")
         
         parent_data = parent_res.data[0]
+        # Never expose credentials or internal storage ids of the nested user row
+        if isinstance(parent_data.get("user"), dict):
+            parent_data["user"].pop("password", None)
+            parent_data["user"].pop("photo_file_id", None)
 
         # 2. Obtener la relación de hijos desde student_representative
         sr_res = (
