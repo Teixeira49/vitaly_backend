@@ -1,225 +1,63 @@
 # Dependencies
 
-## Critical Anti-Patterns
+Vitaly has no DB-session dependency: data access goes through the shared supabase-py client
+(`from app.core.database import supabase`) inside services. `Depends()` is used for auth.
 
-### 1. Manual Dependency Calls
+## 1. Auth gates come from `app/api/deps.py`
 
-**Problem**: Bypasses FastAPI's injection system, no automatic cleanup.
+| Dependency | Allows |
+|------------|--------|
+| `get_current_user_token` | any valid, non-revoked JWT |
+| `get_current_admin_sistema` | `UserRole.ADMIN_SISTEMA` |
+| `get_current_admin_escuela` | `UserRole.ADMIN_ESCUELA` |
+| `get_current_doctor` | `UserRole.DOCTOR` |
+| `get_current_representante` | `UserRole.REPRESENTANTE` |
 
-```python
-# BAD - manually calling dependency
-async def get_db_session():
-    session = SessionLocal()
-    return session
-
-@router.get("/users")
-async def list_users():
-    db = await get_db_session()  # Manual call!
-    users = await db.query(User).all()
-    return users
-
-# GOOD - using Depends()
-from fastapi import Depends
-
-async def get_db_session():
-    session = SessionLocal()
-    try:
-        yield session
-    finally:
-        await session.close()
-
-@router.get("/users", response_model=list[UserResponse])
-async def list_users(db: Session = Depends(get_db_session)):
-    users = await db.query(User).all()
-    return users
-```
-
-### 2. Missing Cleanup in Yield Dependencies
-
-**Problem**: Resources leak, connections not closed.
+All return the decoded payload `dict`; the user id is `int(payload["sub"])`.
 
 ```python
-# BAD - no cleanup
-async def get_db():
-    db = DatabaseConnection()
-    yield db
-    # Connection never closed!
+# BAD - inline role check
+def delete_student(student_id: int, payload: dict = Depends(get_current_user_token)):
+    if payload.get("role") != UserRole.ADMIN_ESCUELA.value:
+        raise HTTPException(status_code=403, detail="...")
 
-# GOOD - proper cleanup
-async def get_db():
-    db = DatabaseConnection()
-    try:
-        yield db
-    finally:
-        await db.close()
+# GOOD - narrowest gate
+def delete_student(student_id: int, admin_payload: dict = Depends(get_current_admin_escuela)): ...
 ```
 
-### 3. Shared State Without Proper Scope
+Multi-role routes: add a composed gate in `deps.py` on top of `get_current_user_token`; never resolve roles in the handler. Details: `vitaly-rbac`.
 
-**Problem**: Dependencies create shared mutable state across requests.
+## 2. Router-level gates
+
+When a whole module shares a role, apply it once:
 
 ```python
-# BAD - shared mutable state
-cache = {}  # Shared across all requests!
-
-async def get_cache():
-    return cache
-
-@router.get("/items/{id}")
-async def get_item(id: int, cache: dict = Depends(get_cache)):
-    # Multiple requests share same dict - race conditions!
-    if id not in cache:
-        cache[id] = await fetch_item(id)
-    return cache[id]
-
-# GOOD - request-scoped state
-from contextvars import ContextVar
-
-request_cache: ContextVar[dict] = ContextVar('request_cache')
-
-async def get_cache():
-    cache = {}
-    request_cache.set(cache)
-    return cache
-
-# BETTER - use proper caching library
-from functools import lru_cache
-
-@lru_cache(maxsize=128)
-async def get_item_cached(id: int):
-    return await fetch_item(id)
+router = APIRouter(dependencies=[Depends(get_current_admin_sistema)])
 ```
 
-### 4. Nested Depends Not Utilized
+Handlers that need `sub` still inject the payload.
 
-**Problem**: Duplicate code, no composition of dependencies.
+## 3. Don't call dependencies manually
 
-```python
-# BAD - duplicated logic
-async def get_current_user(token: str):
-    # Verify token, decode, fetch user
-    return user
+Never call `get_current_user_token(...)` inside a handler; declare it with `Depends()` so FastAPI resolves, caches per request, and documents it in OpenAPI.
 
-async def get_admin_user(token: str):
-    # Same verification, then check admin
-    user = await verify_and_decode(token)
-    if not user.is_admin:
-        raise HTTPException(403)
-    return user
+## 4. Data access belongs in services, not dependencies
 
-# GOOD - compose dependencies
-async def get_current_user(token: str = Depends(oauth2_scheme)):
-    user = await verify_token(token)
-    if not user:
-        raise HTTPException(401, detail="Invalid token")
-    return user
+- No `create_client(...)` outside `app/core/database.py`; no raw HTTP to `/rest/v1/...`.
+- New code queries in `app/services/`, not in handlers (legacy `catalogs.py` queries directly; don't copy it).
+- Tenant resolution (`school_id` from `sub`) happens in the service. Target: `get_school_id_for_admin(user_id)` in `app/services/tenancy.py` (403 if unlinked; not created yet); until then reuse `SchoolAdminService._get_school_id_for_admin` (`app/services/school_admin_service.py:37`). Never copy the query. See `vitaly-tenant-isolation`.
 
-async def get_admin_user(user: User = Depends(get_current_user)):
-    if not user.is_admin:
-        raise HTTPException(403, detail="Admin required")
-    return user
-```
+## 5. Dependencies are sync
 
-### 5. Dependencies with Side Effects
+Gates are `def` (they call `auth_service.is_token_revoked`, which queries `token_blacklist` via supabase-py). Don't convert them to `async def` (see `async.md`).
 
-**Problem**: Dependencies modify state instead of providing resources.
+## 6. No shared mutable state
 
-```python
-# BAD - dependency has side effects
-async def log_request(request: Request):
-    # Side effect: writes to database
-    await db.log_request(request)
-    return None
+Module-level dicts used as caches across requests are race-prone and per-process; use a real cache or nothing.
 
-@router.get("/users")
-async def list_users(_: None = Depends(log_request)):
-    return users
+## Review questions
 
-# GOOD - use middleware for cross-cutting concerns
-from starlette.middleware.base import BaseHTTPMiddleware
-
-class LoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        await db.log_request(request)
-        response = await call_next(request)
-        return response
-
-app.add_middleware(LoggingMiddleware)
-
-# OR - dependency returns resource
-async def get_logger(request: Request):
-    logger = RequestLogger(request)
-    return logger
-
-@router.get("/users")
-async def list_users(logger: RequestLogger = Depends(get_logger)):
-    logger.info("Listing users")
-    return users
-```
-
-### 6. Class-Based Dependencies Without Caching
-
-**Problem**: New instance created unnecessarily.
-
-```python
-# BAD - new instance every time
-class DatabaseService:
-    def __init__(self):
-        self.connection_pool = create_pool()  # Expensive!
-
-@router.get("/users")
-async def list_users(db: DatabaseService = Depends(DatabaseService)):
-    return await db.query_users()
-
-# GOOD - use singleton or app state
-class DatabaseService:
-    def __init__(self, pool):
-        self.pool = pool
-
-async def get_db_service(
-    pool = Depends(lambda: app.state.db_pool)
-) -> DatabaseService:
-    return DatabaseService(pool)
-
-# OR - use dependency with cache
-async def get_db_service() -> DatabaseService:
-    return app.state.db_service
-
-@router.get("/users")
-async def list_users(db: DatabaseService = Depends(get_db_service)):
-    return await db.query_users()
-```
-
-### 7. Security Dependencies Not Applied Globally
-
-**Problem**: Easy to forget security on new routes.
-
-```python
-# BAD - must remember to add auth to every route
-@router.get("/users", dependencies=[Depends(verify_token)])
-async def list_users(): ...
-
-@router.get("/posts")  # Forgot auth!
-async def list_posts(): ...
-
-# GOOD - apply at router level
-router = APIRouter(
-    prefix="/api/v1",
-    dependencies=[Depends(verify_token)]
-)
-
-@router.get("/users")
-async def list_users(): ...
-
-@router.get("/posts")
-async def list_posts(): ...
-```
-
-## Review Questions
-
-1. Are all dependencies injected via `Depends()` not manually called?
-2. Do yield dependencies have proper `try/finally` cleanup?
-3. Is there any shared mutable state across requests?
-4. Are nested dependencies used to compose common patterns?
-5. Do dependencies provide resources, not perform side effects?
-6. Are security dependencies applied at router or app level?
+1. Does every protected route use the narrowest `get_current_*` gate?
+2. Any `payload["role"]` comparisons outside `deps.py`?
+3. Any ad-hoc Supabase clients or queries in handlers for new code?
+4. Is `school_id` derived server-side in the service?

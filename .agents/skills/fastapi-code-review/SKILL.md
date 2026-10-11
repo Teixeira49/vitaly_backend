@@ -1,106 +1,78 @@
 ---
 name: fastapi-code-review
-description: Reviews FastAPI code for routing patterns, dependency injection, validation, and async handlers. Use when reviewing FastAPI apps, checking APIRouter setup, Depends() usage, or response models.
+description: Verdict-free checklist (gates G1-G8 with evidence and severity) for Vitaly FastAPI code (sync def handlers, supabase-py services, APIResponse envelope, get_current_* gates) covering routing, dependencies, validation, blocking I/O, auth, tenant isolation and contract parity. Use when reviewing files changed under app/api/, app/services/ or app/schemas/, or when invoked by pr-review. Not for a bare PR review request; that is pr-review.
 ---
 
-# FastAPI Code Review
+# FastAPI Code Review (Vitaly)
 
-## Quick Reference
+Stack facts the review must assume: sync `def` handlers on purpose, shared blocking supabase-py
+client (`app/core/database.py`, no ORM, no sessions), Pydantic v2, `APIResponse` envelope
+(`app/schemas/responses.py`), global handlers (`app/core/exceptions.py`), role gates in
+`app/api/deps.py`. The rules in `.agents/rules/` are the law; cite them in findings.
 
-| Issue Type | Reference |
-|------------|-----------|
-| APIRouter setup, response_model, status codes | [references/routes.md](references/routes.md) |
-| Depends(), yield deps, cleanup, shared deps | [references/dependencies.md](references/dependencies.md) |
-| Pydantic models, HTTPException, 422 handling | [references/validation.md](references/validation.md) |
-| Async handlers, blocking I/O, background tasks | [references/async.md](references/async.md) |
+This is a **verdict-free** checklist: it lists gate failures with evidence and severity, and never
+issues CUMPLE/APRUEBO. `pr-review` invokes it as its technical checklist for files under `app/api/`,
+`app/services/` and `app/schemas/` and owns the PR verdict; standalone, use it for file review.
 
-## Review Checklist
+## Quick reference
 
-- [ ] APIRouter with proper prefix and tags
-- [ ] All routes specify `response_model` for type safety
-- [ ] Correct HTTP methods (GET, POST, PUT, DELETE, PATCH)
-- [ ] Proper status codes (200, 201, 204, 404, etc.)
-- [ ] Dependencies use `Depends()` not manual calls
-- [ ] Yield dependencies have proper cleanup
-- [ ] Request/Response models use Pydantic
-- [ ] HTTPException with status code and detail
-- [ ] All route handlers are `async def`
-- [ ] No blocking I/O (`requests`, `time.sleep`, `open()`)
-- [ ] Background tasks for non-blocking operations
-- [ ] No bare `except` in route handlers
+| Area | Reference |
+|------|-----------|
+| Decorators, response_model, status codes, docs metadata | [references/routes.md](references/routes.md) |
+| Depends(), auth gates, shared client | [references/dependencies.md](references/dependencies.md) |
+| Pydantic v2 schemas, HTTPException, 422 | [references/validation.md](references/validation.md) |
+| sync vs async, blocking I/O | [references/async.md](references/async.md) |
 
-## Valid Patterns (Do NOT Flag)
+## Vitaly review gates (each failure is a finding)
 
-These are idiomatic FastAPI patterns that may appear problematic but are correct:
+| # | Gate | Pass condition | Source |
+|---|------|----------------|--------|
+| G1 | Auth | Route has a `Depends(get_current_*)` gate (handler or `APIRouter(dependencies=...)`) **or** a `# PUBLIC_ROUTE` comment right above the function. No `payload["role"]` checks outside `deps.py`. | `rbac-enforcement.md`, `vitaly-rbac` |
+| G2 | Tenant | School-scoped reads/writes resolve `school_id` server-side from `sub` and chain `.eq("school_id", school_id)` or an ownership check. Never `school_id` from body/query/path (except `admin_sistema`). Foreign-school record → 403, missing → 404. | `tenant-isolation.md`, `vitaly-tenant-isolation` |
+| G3 | Envelope | `response_model=APIResponse[...]` and `return APIResponse(...)`. No raw dict / `response.data` returns. `APIResponse[dict]` is legacy-tolerated, not for new code. File exports (`StreamingResponse`) are exempt on 200 (`standard-response.md` §2, `export-patterns`). | `standard-response.md`, `standard-api-responses` |
+| G4 | Empty vs missing | Empty collection → 200 + `data=[]`. Missing single resource → 404. Mutations check `response.data` before assuming success. | `empty-table-validation.md` |
+| G5 | Schema naming | New schemas use `*Base/*Create/*Update/*Read/*Filter`, `Field(description=...)`, no secrets in `*Read`. Legacy `*Response` tolerated. | `schema-naming-convention.md` |
+| G6 | Docs (Issue #8) | Endpoints: `summary` + `description` and a docstring stating tenant scope, allowed role, `Raises`. Services: Google-style docstrings. | `CLAUDE.md` §4 |
+| G7 | Contract parity | Any added/renamed/removed/nullable-changed field in a `response_model` or payload has a matching change in `../vitaly-care-for-families/src/services`. | `cross-repo-e2e.md`, `vitaly-contracts-parity` |
+| G8 | Sync/async | Handlers calling supabase-py (or any blocking I/O) are `def`. `async def` only if every I/O call inside is awaited async. | [references/async.md](references/async.md) |
 
-- **Pydantic validates request body automatically** - No manual validation needed when using typed Pydantic models as parameters
-- **Dependency injection for database sessions** - Sessions come from `Depends()`, not passed as function arguments
-- **HTTPException for all HTTP errors** - FastAPI handles conversion to proper HTTP responses
-- **Async def endpoint without await** - May be using sync dependencies or simple operations; FastAPI handles this
-- **Type annotation on Depends()** - This is documentation/IDE support, not a type assertion
-- **Query/Path/Body defaults** - FastAPI processes these at runtime, not traditional Python defaults
-- **Returning dict from endpoint** - Pydantic converts automatically if `response_model` is set
+## Severity mapping
 
-## Context-Sensitive Rules
+| Gates | Severity | Why |
+|-------|----------|-----|
+| G1, G2 | `high` | auth / tenant isolation (security, cross-school data leak) |
+| G3, G4, G7, G8 | `medium` | contract, envelope, correctness, blocking I/O |
+| G5, G6 | `low` | naming / docs (exception: secrets in a `*Read` schema under G5 → `high`) |
 
-Only flag issues when the context warrants it:
+## Valid patterns (do NOT flag)
 
-- **Flag missing validation** ONLY IF the field isn't already in a Pydantic model with validators
-- **Flag missing auth** ONLY IF the endpoint isn't using `Depends()` with an auth dependency
-- **Flag missing error handling** ONLY IF HTTPException isn't raised appropriately for error cases
-- **Flag sync in async** ONLY IF the operation is actually blocking (file I/O, network calls, CPU-bound), not just non-async
+- **Sync `def` handlers and services**: deliberate. FastAPI runs them in a threadpool, so the blocking supabase-py call does not stall the event loop.
+- **Gate payload as `dict`** (`admin_payload: dict = Depends(get_current_admin_escuela)`) and `int(payload["sub"])` for the user id.
+- **Module-level `supabase` client import** in services: it is the shared client, not an ad-hoc one.
+- **`HTTPException` raised from services**: the global handler wraps it into the envelope.
+- **Omitting `success=True`**: it is the default.
+- **Existing `APIResponse[dict]` / `*Response` schemas** in untouched code: legacy, tolerated by the rules.
+- **Pydantic body models without manual checks**: Pydantic already validates; the 422 handler wraps errors.
 
-## Gates (FastAPI-specific)
+## Flag these
 
-Run **once per FastAPI-related finding**, after you can anchor **`file:line`** for the handler (see [review-verification-protocol](../review-verification-protocol/SKILL.md)) and **before** the finding text ships. If a step’s pass condition is not met, **do not** assert the finding as written—gather evidence, withdraw, downgrade severity, or rephrase as a question.
+- `async def` handler or dependency that calls supabase-py, `requests`, `time.sleep`, or file I/O (blocks the loop for every request).
+- `return {...}`, `return response.data`, or a route without `response_model`.
+- Route with neither a gate nor `# PUBLIC_ROUTE`; inline role checks.
+- `school_id` taken from the client; school-scoped query without a school filter.
+- 404 on empty lists; `response.data[0]` without an emptiness check.
+- `create_client(...)` outside `app/core/database.py`, or raw HTTP calls to `/rest/v1/...`.
+- Pydantic v1 APIs in new code (`.dict()`, `orm_mode`, `@validator`, `GenericModel`).
+- Bare `except:` / `except Exception: pass` hiding supabase errors.
+- Services letting unexpected errors (supabase `APIError`, `ValueError`) escape instead of wrapping them as `HTTPException(500, ...)`: `app/main.py:45-46` only handles `RequestValidationError` and `StarletteHTTPException`, so anything else is a plain 500 without envelope.
 
-### Gate 1 — Route decorator and response surface
+## Evidence before reporting
 
-| Step | Action | **Pass condition** |
-|------|--------|---------------------|
-| 1a | Open the handler’s route decorator in the repo (not from memory). | **`file:line`** for `@router.*` / `@app.*` (or the site that registers this handler). |
-| 1b | Record HTTP method, `response_model=`, and `status_code=` on that decorator (or note they are absent). | **Snippet from that line** or **explicit absent** with the same **`file:line`**. |
+For every finding, anchor `file:line` from the repo (not memory):
+1. Decorator line: method, `response_model`, `status_code`, `summary` (or explicitly absent).
+2. Handler body range; for blocking claims, `file:line` of each blocking call in an `async def`.
+3. Auth claims: search the handler and its `APIRouter(...)` for `Depends(get_current_` and `# PUBLIC_ROUTE`; report paths searched and match count.
+4. Validation claims: confirm the argument isn't already a Pydantic model or constrained `Query`/`Path`.
+5. Parity claims: name the frontend file/interface checked, or state that the sibling repo is absent.
 
-### Gate 2 — Blocking or “should be async”
-
-| Step | Action | **Pass condition** |
-|------|--------|---------------------|
-| 2a | Read the full handler body. | **`file:line` range** covering the body. |
-| 2b | If claiming blocking I/O: name each blocking call (e.g. `requests.`, `open(`, `time.sleep`, sync DB/ORM). | **Each** call has **`file:line`**, or withdraw the finding if **none** after the read. |
-
-### Gate 3 — Depends, validation, auth
-
-| Step | Action | **Pass condition** |
-|------|--------|---------------------|
-| 3a | List parameters: `Depends` / `Annotated[..., Depends]`, Pydantic models, `Body`/`Query`/`Path`, `Request`/`Response`. | **Names + mechanism** tied to **`file:line`** on the signature. |
-| 3b | If claiming missing auth: search the handler file (and its `APIRouter` module if separate) for `Depends`, `Security`, `HTTPBearer`, or project auth dependencies. | **Citation** to an existing hook, or **search result**: paths searched + **N matches** (zero is allowed). |
-| 3c | If claiming missing validation: confirm the argument is not already a Pydantic model or constrained `Query`/`Path`/`Body`. | **Type/source** with **`file:line`**, or withdraw if validation already applies. |
-
-## FastAPI Framework Behaviors
-
-FastAPI + Pydantic handle many concerns automatically:
-- Request validation via Pydantic models
-- Response serialization via response_model
-- Dependency injection for cross-cutting concerns
-- Exception handling via exception handlers
-
-Before flagging "missing" functionality, verify FastAPI isn't handling it.
-
-## When to Load References
-
-- Reviewing route definitions → routes.md
-- Reviewing dependency injection → dependencies.md
-- Reviewing Pydantic models/validation → validation.md
-- Reviewing async route handlers → async.md
-
-## Review Questions
-
-1. Do all routes have explicit response models and status codes?
-2. Are dependencies injected via Depends() with proper cleanup?
-3. Do all Pydantic models validate inputs correctly?
-4. Are all route handlers async and non-blocking?
-
-## Before Submitting Findings
-
-1. For each FastAPI-related finding, complete **Gates (FastAPI-specific)** above.
-2. Load and follow [review-verification-protocol](../review-verification-protocol/SKILL.md) (Pre-Report checklist and **Verification by Issue Type**) before reporting any issue.
+If a step fails, withdraw the finding, downgrade it, or phrase it as a question.

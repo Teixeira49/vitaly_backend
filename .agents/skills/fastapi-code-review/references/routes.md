@@ -1,173 +1,70 @@
 # Routes
 
-## Critical Anti-Patterns
+Endpoints live in `app/api/v1/endpoints/*.py`, are aggregated in `app/api/v1/router.py`, and mounted in `app/main.py` under `settings.API_V1_STR` (`/api/v1`).
 
-### 1. Missing response_model
-
-**Problem**: No type safety, documentation unclear, response not validated.
+## 1. Missing envelope or response_model (`standard-response.md`)
 
 ```python
-# BAD
-@router.get("/users/{user_id}")
-async def get_user(user_id: int):
-    return {"id": user_id, "name": "Alice"}
+# BAD - raw dict, no response_model
+@router.get("/students/{student_id}")
+def get_student(student_id: int, admin_payload: dict = Depends(get_current_admin_escuela)):
+    return {"id": student_id}
 
 # GOOD
-@router.get("/users/{user_id}", response_model=UserResponse)
-async def get_user(user_id: int):
-    return {"id": user_id, "name": "Alice"}
+@router.get(
+    "/students/{student_id}",
+    response_model=APIResponse[StudentRead],
+    summary="Get student detail",
+    description="Student of the authenticated admin's school.",
+)
+def get_student(student_id: int, admin_payload: dict = Depends(get_current_admin_escuela)) -> APIResponse[StudentRead]:
+    """Get a student. Tenant: school_id from `sub`. RBAC: admin_escuela.
+
+    Raises:
+        HTTPException: 404 if the student does not exist; 403 if it belongs to another school.
+    """
+    student = school_admin_service.get_student(user_id=int(admin_payload["sub"]), student_id=student_id)
+    return APIResponse(data=student, message="Estudiante obtenido exitosamente")
 ```
 
-### 2. No APIRouter Prefix/Tags
+`APIResponse[dict]` on existing endpoints is legacy-tolerated; new endpoints use a typed `*Read`.
 
-**Problem**: Routes not organized, duplicated path prefixes, unclear docs.
+## 2. Missing auth gate or public marker (`rbac-enforcement.md`)
+
+Every route needs `Depends(get_current_*)` (handler or `APIRouter(dependencies=[...])`) or:
 
 ```python
-# BAD
-@app.get("/api/v1/users")
-async def list_users(): ...
-
-@app.get("/api/v1/users/{id}")
-async def get_user(id: int): ...
-
-# GOOD
-router = APIRouter(prefix="/api/v1/users", tags=["users"])
-
-@router.get("")
-async def list_users(): ...
-
-@router.get("/{id}")
-async def get_user(id: int): ...
-
-app.include_router(router)
+# PUBLIC_ROUTE
+@router.get("/states", response_model=APIResponse[List[StateResponse]])
+def get_states(): ...
 ```
 
-### 3. Wrong HTTP Methods
+Legacy: some public routes put `# PUBLIC_ROUTE` inside the docstring; when touched, move it above the function.
 
-**Problem**: Violates REST conventions, confusing semantics.
+## 3. Missing docs metadata (Issue #8)
 
-```python
-# BAD - using GET for mutations
-@router.get("/users/{id}/delete")
-async def delete_user(id: int): ...
+New or modified endpoints need `summary`, `description`, and a docstring with tenant scope, allowed role(s), and `Raises`.
 
-# BAD - using POST for retrieval
-@router.post("/users/{id}")
-async def get_user(id: int): ...
+## 4. Wrong HTTP methods / status codes
 
-# GOOD
-@router.delete("/users/{id}", status_code=204)
-async def delete_user(id: int): ...
+- GET reads, POST creates, PUT/PATCH updates, DELETE removes. No mutations via GET.
+- Creates may use `status_code=201` and still return the envelope.
+- Avoid `status_code=204` on routes that return `APIResponse` (204 must have no body); return 200 with a message instead.
 
-@router.get("/users/{id}", response_model=UserResponse)
-async def get_user(id: int): ...
-```
+## 5. Generic exceptions instead of HTTPException
 
-### 4. Missing Status Codes
+`raise ValueError(...)` becomes an un-enveloped 500 (there is no catch-all handler). Raise `HTTPException(status_code=404|403|409, detail="...")`; the global handler puts `detail` into `message`.
 
-**Problem**: Always returns 200, even for creates/deletes.
+Same for unexpected failures in services (supabase `APIError` from `.execute()`): `app/main.py:45-46` registers only `RequestValidationError` and `StarletteHTTPException`, so services must wrap them as `HTTPException(status_code=500, detail="...")`.
 
-```python
-# BAD - creates should return 201
-@router.post("/users")
-async def create_user(user: UserCreate):
-    return created_user
+## 6. Path/query validation
 
-# BAD - deletes should return 204
-@router.delete("/users/{id}")
-async def delete_user(id: int):
-    return {"message": "deleted"}
+Constrain ids and pagination: `Path(..., gt=0)`, `Query(1, ge=1)`, `Query(10, ge=1, le=100)`.
 
-# GOOD
-@router.post("/users", response_model=UserResponse, status_code=201)
-async def create_user(user: UserCreate):
-    return created_user
+## Review questions
 
-@router.delete("/users/{id}", status_code=204)
-async def delete_user(id: int):
-    # 204 returns no content
-    return None
-```
-
-### 5. Direct Exception Raising
-
-**Problem**: Returns generic 500 errors instead of proper HTTP status codes.
-
-```python
-# BAD
-@router.get("/users/{id}")
-async def get_user(id: int):
-    user = await db.get_user(id)
-    if not user:
-        raise ValueError("User not found")
-    return user
-
-# GOOD
-from fastapi import HTTPException
-
-@router.get("/users/{id}", response_model=UserResponse)
-async def get_user(id: int):
-    user = await db.get_user(id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return user
-```
-
-### 6. Multiple Response Models
-
-**Problem**: Same endpoint returns different schemas.
-
-```python
-# BAD
-@router.get("/users/{id}")
-async def get_user(id: int, full: bool = False):
-    if full:
-        return UserDetailResponse(...)
-    return UserSummaryResponse(...)
-
-# GOOD - use separate endpoints
-@router.get("/users/{id}", response_model=UserSummaryResponse)
-async def get_user(id: int):
-    return UserSummaryResponse(...)
-
-@router.get("/users/{id}/full", response_model=UserDetailResponse)
-async def get_user_full(id: int):
-    return UserDetailResponse(...)
-
-# ALTERNATIVE - use response_model with Union
-from typing import Union
-
-@router.get("/users/{id}", response_model=Union[UserSummaryResponse, UserDetailResponse])
-async def get_user(id: int, full: bool = False):
-    if full:
-        return UserDetailResponse(...)
-    return UserSummaryResponse(...)
-```
-
-### 7. Path Parameter Validation
-
-**Problem**: No validation on path parameters.
-
-```python
-# BAD
-@router.get("/users/{user_id}")
-async def get_user(user_id: int):
-    # What if user_id is negative or zero?
-    return await db.get_user(user_id)
-
-# GOOD
-from fastapi import Path
-
-@router.get("/users/{user_id}", response_model=UserResponse)
-async def get_user(user_id: int = Path(..., gt=0)):
-    return await db.get_user(user_id)
-```
-
-## Review Questions
-
-1. Does every route have an explicit `response_model`?
-2. Are routes organized with APIRouter using prefix and tags?
-3. Are HTTP methods semantically correct (GET for read, POST for create, etc.)?
-4. Do create operations return 201? Do deletes return 204?
-5. Are HTTPExceptions used instead of generic exceptions?
-6. Are path parameters validated?
+1. `response_model=APIResponse[...]` and `return APIResponse(...)` on every route?
+2. Gate or `# PUBLIC_ROUTE` on every route?
+3. `summary`, `description`, docstring present on new/modified routes?
+4. Methods and status codes semantically correct, with no 204 + body?
+5. Expected failures raised as `HTTPException`?

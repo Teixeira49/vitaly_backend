@@ -8,7 +8,7 @@ Does the code do what the ticket says, and only that?
 
 - Requirement mismatch: implemented behavior diverges from the ticket's intent.
 - Missing case: a stated scenario (or an obvious edge case of it) is not handled.
-- Wrong invariant: state transitions, calculations, or rules that violate the domain (e.g. money rounding, quantity going negative, expired-status handling).
+- Wrong invariant: state transitions, calculations, or rules that violate the domain (e.g. IMC computed with height in cm instead of meters, a closed academic year still treated as current).
 - Scope creep / gap: changes beyond the ticket, or a stated acceptance criterion left uncovered.
 - Silent data mutation: writes/deletes not implied by the ticket.
 
@@ -17,7 +17,7 @@ Does the code do what the ticket says, and only that?
 Is the change correct, maintainable, and safe to run?
 *(For Vitaly backend, cross-check against the gates in `fastapi-code-review`)*
 
-- Correctness: null/undefined handling, off-by-one, unhandled promise/error, race conditions.
+- Correctness: `None` handling, `response.data[0]` on an empty result, off-by-one in `.range()`, unhandled supabase `APIError`, race conditions.
 - Sync/async discipline (G8): Handlers and services calling supabase-py must be sync `def` (FastAPI threadpool). Flag `async def` with blocking I/O calls.
 - API contract & envelope (G3, G7): Endpoints must return `APIResponse[T]`. Schema changes must maintain contract parity with `../vitaly-care-for-families`.
 - Empty vs. missing (G4): Empty collections return 200 + `data=[]` (never 404). 404 is strictly for missing single resources.
