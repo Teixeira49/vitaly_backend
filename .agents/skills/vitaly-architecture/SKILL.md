@@ -99,7 +99,7 @@ Otherwise leave a marker and ship only the fix:
 - ❌ Ports/adapters, or `domain/` / `application/` / `infrastructure/` layers.
 - ❌ `async def` handlers or services calling blocking supabase-py (blocks the event loop).
 - ❌ An ORM, `app/models/`, or SQLAlchemy sessions. Only after an explicit, approved migration
-  decision; `sqlalchemy-postgres` and `sqlalchemy-code-review` exist for that future scenario.
+  decision; `sqlalchemy-postgres` and `sqlalchemy-code-review` are parked in `.agents/future-skills/` for that future scenario.
 - ❌ Injecting services with `Depends(...)` or creating them per request.
 - ❌ Inline role checks in handlers (use `vitaly-rbac`) or trusting a client `school_id`
   (use `vitaly-tenant-isolation`).
