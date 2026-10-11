@@ -1,22 +1,28 @@
-# Checklist de Calidad de Tests para Features en Vitaly
+# Vitaly feature test checklist
 
-Antes de finalizar o abrir un Pull Request con una nueva feature, valida esta lista de verificación:
+Validate before opening a PR with a new or changed feature.
 
-- [ ] **Ubicación:** El test reside en `tests/test_<feature>.py`.
-- [ ] **Pytest Discovery:** El archivo es detectado automáticamente al ejecutar `pytest`.
-- [ ] **Contrato APIResponse:** Todas las respuestas 200/201 verifican `response.json()["success"] is True` y el formato envelope (`data`, `message`).
-- [ ] **Aislamiento Multi-tenancy:**
-  - [ ] Se verifica que las consultas a la base de datos incluyan `escuela_id == current_user.escuela_id`.
-  - [ ] Se verifica que un usuario de la Escuela A no pueda acceder a registros de la Escuela B.
-- [ ] **Manejo de Tablas Vacías:**
-  - [ ] Se simula que la consulta retorne lista vacía (`data = []`).
-  - [ ] El sistema maneja el caso con `404 Not Found` (o lista vacía) sin generar excepciones `500` silenciosas.
-- [ ] **Matriz de Seguridad (RBAC):**
-  - [ ] Rol autorizado accede correctamente (`200 OK`).
-  - [ ] Rol no autorizado recibe `403 Forbidden`.
-  - [ ] Petición sin token recibe `401 Unauthorized`.
-- [ ] **Validación Pydantic:**
-  - [ ] Petición con esquema erróneo o campos requeridos faltantes retorna `422 Unprocessable Entity`.
-- [ ] **Aislamiento de Red:**
-  - [ ] Las dependencias externas (Supabase, servicios de correo, almacenamiento S3) están mockeadas con `unittest.mock.patch`.
-  - [ ] Los tests se ejecutan de forma local y offline sin tocar bases de datos de producción.
+- [ ] **Location:** tests live in `tests/test_<feature>.py` and are collected by `pytest` (`pytest.ini`: `testpaths = tests`).
+- [ ] **Envelope:**
+  - [ ] 2xx responses assert `success is True`, `data` and `message`.
+  - [ ] Error responses assert `success is False` and `message` (global handlers in `app/core/exceptions.py`; there is no `detail` key).
+  - [ ] Unexpected supabase error is wrapped by the service as `HTTPException(500)` → 500 + envelope (raw exceptions skip the handlers and `TestClient` re-raises them).
+- [ ] **Authentication fixtures:**
+  - [ ] Gates overridden via `app.dependency_overrides[get_current_<role>]` with a realistic payload (`sub` as string, `role`, `email`, `name`, ...). Never `get_current_user` (it does not exist).
+  - [ ] Overrides cleared in `finally` / fixture teardown.
+- [ ] **Tenant isolation (`school_id`):**
+  - [ ] `school_id` resolved server-side from `sub` (resolver such as `_get_school_id_for_admin` asserted or patched); never read from body/query/path on non-`admin_sistema` routes.
+  - [ ] Directly scoped queries assert `.eq("school_id", <resolved id>)`.
+  - [ ] A row that exists in another school → **403**.
+  - [ ] User not linked to any school → **403**.
+- [ ] **Missing and empty data:**
+  - [ ] Single resource with `data = []` → **404**, no `IndexError` / 500.
+  - [ ] Collection with no rows → **200 + `data=[]`** (never 404). Legacy endpoints that still 404 are fixed or covered by a strict `xfail`.
+- [ ] **RBAC matrix:**
+  - [ ] Allowed role → 2xx.
+  - [ ] Wrong role → **403** (override `get_current_user_token`, so the real gate runs).
+  - [ ] Invalid token and revoked token → **401**.
+  - [ ] Route protection guard test exists (`vitaly-rbac`, `tests/api/test_route_protection.py`).
+- [ ] **Validation:** bad path/query/body → **422** with a non-empty `errors` list.
+- [ ] **Network isolation:** supabase patched where used (`app.services.<module>.supabase`); ImageKit and other external services mocked. Tests run offline.
+- [ ] **Honesty:** no test claims "isolation verified" based on mocks alone.

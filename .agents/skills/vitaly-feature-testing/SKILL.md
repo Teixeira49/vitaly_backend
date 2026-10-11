@@ -1,170 +1,172 @@
 ---
 name: vitaly-feature-testing
-description: Generates comprehensive pytest test suites for new FastAPI features in Vitaly. Covers APIResponse validation, multi-tenancy isolation (escuela_id), Supabase query mocking, empty table checks, and RBAC matrix. Use whenever creating or modifying endpoints, services, or features in the repo.
+description: "Pytest suites for Vitaly features (FastAPI TestClient + mocked supabase-py): APIResponse envelope, tenant isolation by server-resolved school_id (foreign row 403, missing row 404, empty list 200 + []), RBAC matrix via get_current_* overrides (wrong role 403, bad/revoked token 401) and 422 validation. Trigger: creating or modifying an endpoint in app/api/, a service in app/services/, or writing tests in tests/."
 ---
 
 # Vitaly Feature Testing
 
-Guía y generador de pruebas automatizadas con **pytest** y **FastAPI TestClient** adaptada a la arquitectura y estándares obligatorios de Vitaly Backend.
+How to test a Vitaly feature against the code as it really is: sync `def` handlers, module-level
+service singletons, the global supabase-py client (`app/core/database.py`), the `APIResponse`
+envelope and the `get_current_*` gates in `app/api/deps.py`.
 
----
+**Runnable reference:** `examples/template_feature_test.py` targets the real endpoint
+`GET /api/v1/school-admin/classrooms/{classroom_id}/students`. Copy it to `tests/test_<feature>.py`
+and adapt. Pre-PR checklist: `resources/test_matrix_checklist.md`.
 
-## Cuándo usar esta Skill
+## When to use
 
-- Al implementar o modificar cualquier endpoint en `app/api/` o servicio en `app/services/`.
-- Al generar la suite de tests unitarios o de integración en `tests/test_<feature>.py`.
-- Al cumplir con la regla *"Keep tests with code"* exigida por `work-unit-commits` y `AGENTS.md`.
-- Para validar seguridad multi-tenant, envelopes de respuesta y roles RBAC antes de abrir un PR.
+- Implementing or changing an endpoint in `app/api/` or a service in `app/services/`.
+- Writing `tests/test_<feature>.py` (tests live with the code, see `work-unit-commits`).
+- Before opening a PR, to cover envelope, tenancy and RBAC.
 
----
+Not here: the guard test that fails on any ungated route lives in `vitaly-rbac`
+(`tests/api/test_route_protection.py`). Envelope details: `standard-api-responses`.
 
-## Las 5 Leyes del Testing en Vitaly
+## Facts the tests depend on (verified in app/)
 
-Todo conjunto de pruebas para una feature en Vitaly DEBE cubrir obligatoriamente estas 5 dimensiones:
+| Fact | Where |
+|---|---|
+| No `get_current_user`, no `RoleChecker`, no `current_user` object. Gates: `get_current_user_token`, `get_current_admin_sistema`, `get_current_admin_escuela`, `get_current_doctor`, `get_current_representante`; each returns the JWT payload `dict`. | `app/api/deps.py` |
+| Payload claims: `sub` (user id as **string**), `email`, `role`, `name`, `gender`, plus role extras (`administrative_position`, `school` name for admin_escuela; `especially`, `doc_license_number` for doctor; `type_representative` for representante). **No `school_id` claim.** | `app/services/auth_service.py` (login) |
+| Role values: `admin_sistema`, `admin_escuela`, `doctor`, `representante`. | `app/schemas/enums.py` (`UserRole`) |
+| Tenant column is `school_id` (table `school` PK `sch_id`). For admin_escuela it is resolved by `SchoolAdminService._get_school_id_for_admin(user_id)` (403 if unlinked). | `app/services/school_admin_service.py` |
+| Services import the client as `from app.core.database import supabase`, so patch it **where it is used**: `patch("app.services.<module>.supabase")`. | each service |
+| `HTTPException` and 422 are rewritten by global handlers: error bodies are `{"success": false, "message": ..., "errors": ...}`. There is **no** `detail` key in responses. | `app/core/exceptions.py` |
+| Bad JWT or revoked token (`auth_service.is_token_revoked`) → 401; wrong role → 403. | `app/api/deps.py` |
 
-| # | Dimensión | Regla Vitaly | Verificación en el Test |
+## The 5 laws
+
+| # | Dimension | Expected | How to assert |
 |---|---|---|---|
-| 1 | **Unified Envelope** | Todo endpoint retorna `APIResponse[T]` | `assert data["success"] is True`, `assert "data" in data`, `assert "message" in data` |
-| 2 | **Multi-tenancy Silencioso** | Filtro obligatorio por `escuela_id` del token | Verificar que `.eq("escuela_id", current_user.escuela_id)` fue llamado y que datos de otra escuela no son expuestos. |
-| 3 | **Mocking Determinista** | Tests autónomos sin llamadas de red vivas | Mockear `supabase.table().select().eq().execute()` con `MagicMock` y `patch`. |
-| 4 | **Validación Tablas Vacías** | Prohibidos los errores 500 silenciosos | Cuando `data = []`, probar que retorne 404 limpio o lista vacía, nunca fallo de servidor. |
-| 5 | **Matriz RBAC / Seguridad** | Control estricto con `RoleChecker` | Simular roles vía `app.dependency_overrides`: probar éxito con rol autorizado, 403 con rol inválido y 401 sin auth. |
+| 1 | Envelope | Every response is `APIResponse` | `success`, `message`, `data` on 2xx; `success is False` + `message` on errors |
+| 2 | Tenancy | `school_id` resolved server-side, never from the client | Service resolver called with the token `sub`; filter `.eq("school_id", ...)` called; **foreign row → 403** |
+| 3 | Deterministic mocks | No network, no real Supabase | `patch("app.services.<module>.supabase")` + chainable query mock |
+| 4 | Empty / missing | Never a silent 500 | **Missing single row → 404**; **empty collection → 200 + `data=[]`** (never 404) |
+| 5 | RBAC | Gates in `Depends`, not inline | Allowed role 2xx, **wrong role 403**, **invalid/revoked token 401** |
 
----
+Law 1 limit: `app/main.py:45-46` registers handlers only for `RequestValidationError` and
+`StarletteHTTPException`. Any other exception (e.g. a raw supabase/postgrest error) becomes a
+plain 500 **without** the envelope, and `TestClient` (default `raise_server_exceptions=True`)
+re-raises it inside the test. Services must wrap unexpected errors as `HTTPException(500, ...)`.
 
-## Matriz Estándar de Casos de Prueba (Por Feature)
+Status code standard (rule `tenant-isolation.md`, directive 5): row does not exist → 404; row
+exists in another school → 403. A test that accepts "404 or 403" is wrong.
 
-Para cada nueva feature o conjunto de endpoints, genera un archivo en `tests/test_<feature>.py` con los siguientes casos mínimos:
+## Minimum test matrix per feature
 
-### 1. `test_<feature>_success` (Happy Path)
-- Configura mocks con datos válidos pertenecientes a la escuela del usuario autenticado.
-- Ejecuta la petición (`client.get`, `post`, `put`, `delete`).
-- Asevera status code (200 o 201).
-- Valida la estructura `APIResponse(success=True, data=..., message=...)`.
+1. `test_<feature>_success` — happy path, status 200/201, envelope, service called with `user_id=int(sub)`.
+2. `test_<feature>_tenant_*` — resolver used, `school_id` filter applied, foreign-school row → 403.
+3. `test_<feature>_missing_returns_404` — single resource lookup returns `data=[]` → 404.
+4. `test_<feature>_empty_returns_empty_list` — collection with no rows → 200 + `data=[]`.
+5. `test_<feature>_wrong_role_403`, `_invalid_token_401`, `_revoked_token_401`.
+6. `test_<feature>_invalid_input_422` — bad path/query/body → 422 with `errors`.
+7. `test_<feature>_unexpected_error_500` — supabase mock raises (`execute.side_effect = Exception(...)`);
+   the service wraps it as `HTTPException(500)` → assert 500 + `success is False` envelope.
 
-### 2. `test_<feature>_tenant_isolation` (Aislamiento Multi-escuela)
-- Simula una consulta donde existen registros de otra escuela (`escuela_id != current_user.escuela_id`).
-- Verifica que el servicio o query filtre estrictamente por `current_user.escuela_id`.
-- Confirma que el usuario no recibe datos de terceros (status 404 o `data: []`).
+Test at the cheapest layer that proves the point: endpoint tests patch the **service method**
+(`patch.object(service, "method", ...)`); tenancy/empty/404/403 logic is tested on the
+**service** with supabase mocked.
 
-### 3. `test_<feature>_empty_or_not_found` (Tabla o Registro Inexistente)
-- Configura el mock de Supabase para retornar `execute().data = []`.
-- Verifica que el endpoint retorne `404 Not Found` (o lista vacía si es un listado) con mensaje amigable.
-- Asegura que no ocurra un IndexError ni una excepción 500.
+## Patterns
 
-### 4. `test_<feature>_rbac_forbidden` (Control de Acceso)
-- Inyecta un usuario con rol no autorizado en `app.dependency_overrides`.
-- Ejecuta la petición.
-- Verifica status `403 Forbidden` y detalle de denegación de permisos.
-
-### 5. `test_<feature>_validation_error` (Esquemas Pydantic)
-- Envía un payload con tipos incorrectos, valores faltantes o fuera de rango.
-- Verifica status `422 Unprocessable Entity` generado por Pydantic.
-
----
-
-## Plantilla Canónica de Test en Vitaly
+### Authenticate: override the gate with a realistic payload
 
 ```python
-# tests/test_<feature>.py
-from unittest.mock import MagicMock, patch
-import pytest
-from fastapi.testclient import TestClient
-
+from app.api.deps import get_current_admin_escuela, get_current_user_token
 from app.main import app
-from app.api.deps import get_current_user
-# Importa la dependencia específica si aplica (ej. get_current_doctor, RoleChecker)
 
-
-@pytest.fixture
-def client():
-    return TestClient(app)
-
+def admin_payload(user_id: int = 4) -> dict:
+    return {"sub": str(user_id), "email": "admin@colegio.test", "role": "admin_escuela",
+            "name": "Laura Pérez", "gender": "FEMENINO",
+            "administrative_position": "Coordinadora", "school": "Colegio San Ignacio"}
 
 @pytest.fixture
-def mock_user():
-    return {
-        "id": 10,
-        "name": "Dra. Ana",
-        "email": "ana@vitaly.app",
-        "role": "doctor",
-        "escuela_id": 1,
-    }
-
-
-def test_feature_success(client, mock_user):
-    """Happy Path: Verifica retorno exitoso envuelto en APIResponse."""
-    app.dependency_overrides[get_current_user] = lambda: mock_user
+def admin_client():                      # same shape as tests/test_profile_photo.py
+    app.dependency_overrides[get_current_admin_escuela] = lambda: admin_payload()
     try:
-        with patch("app.services.<service_module>.supabase") as mock_supabase:
-            mock_table = MagicMock()
-            mock_supabase.table.return_value = mock_table
-            mock_table.select.return_value.eq.return_value.execute.return_value = MagicMock(
-                data=[{"id": 1, "escuela_id": 1, "nombre": "Registro Test"}]
-            )
-
-            response = client.get("/api/v1/<feature>/1")
-            assert response.status_code == 200
-            res_json = response.json()
-            assert res_json["success"] is True
-            assert res_json["data"]["id"] == 1
-            assert "message" in res_json
-    finally:
-        app.dependency_overrides.clear()
-
-
-def test_feature_tenant_isolation(client, mock_user):
-    """Multi-tenancy: Verifica que no se acceda a datos de otra escuela."""
-    app.dependency_overrides[get_current_user] = lambda: mock_user
-    try:
-        with patch("app.services.<service_module>.supabase") as mock_supabase:
-            mock_table = MagicMock()
-            mock_supabase.table.return_value = mock_table
-            # Simula que para la escuela_id del usuario no hay datos
-            mock_table.select.return_value.eq.return_value.execute.return_value = MagicMock(
-                data=[]
-            )
-
-            response = client.get("/api/v1/<feature>/999")
-            assert response.status_code == 404
-    finally:
-        app.dependency_overrides.clear()
-
-
-def test_feature_rbac_forbidden(client):
-    """RBAC: Verifica que un rol no autorizado reciba 403."""
-    unauthorized_user = {"id": 2, "role": "representante", "escuela_id": 1}
-    app.dependency_overrides[get_current_user] = lambda: unauthorized_user
-    try:
-        response = client.get("/api/v1/<feature>/1")
-        assert response.status_code == 403
-    finally:
-        app.dependency_overrides.clear()
-
-
-def test_feature_validation_error(client, mock_user):
-    """Pydantic: Verifica que datos inválidos retornen 422."""
-    app.dependency_overrides[get_current_user] = lambda: mock_user
-    try:
-        response = client.post("/api/v1/<feature>", json={"campo_invalido": 123})
-        assert response.status_code == 422
+        yield TestClient(app)
     finally:
         app.dependency_overrides.clear()
 ```
 
----
+- To test the **gate itself** (wrong role → 403), override `get_current_user_token`, not the
+  role gate, so `get_current_<role>` really runs:
+  `app.dependency_overrides[get_current_user_token] = lambda: {"sub": "30", "role": "representante"}`.
+- 401 without overrides: send `Bearer not-a-jwt` (decode fails), or sign a real token with
+  `app.core.security.create_access_token` and `patch.object(auth_service, "is_token_revoked", return_value=True)`.
+- Missing `Authorization` header → 401. Guaranteed by the pinned `fastapi[standard]>=0.122.0`
+  (`requirements.txt`): security classes such as `HTTPBearer` return 401 since 0.122.0.
 
-## Comandos de Ejecución
+### Tenant: patch the resolver, mock the supabase chain
 
-Para ejecutar la suite generada:
+```python
+from unittest.mock import MagicMock, patch
+from app.services.school_admin_service import school_admin_service
+
+def make_query(data=None, count=None):
+    q = MagicMock()
+    for m in ("select", "eq", "neq", "in_", "is_", "ilike", "gte", "lte",
+              "order", "range", "limit", "insert", "update", "delete"):
+        getattr(q, m).return_value = q          # any chain length ends in the same execute()
+    q.execute.return_value = MagicMock(data=[] if data is None else data, count=count)
+    return q
+
+def test_foreign_school_row_returns_403():
+    classroom = make_query([{"id": 7, "school_id": 2}])        # row of ANOTHER school
+    with patch.object(school_admin_service, "_get_school_id_for_admin", return_value=1), \
+         patch("app.services.school_admin_service.supabase") as sb:
+        sb.table.side_effect = lambda name: {"classroom": classroom}[name]
+        with pytest.raises(HTTPException) as exc:
+            school_admin_service.get_students_by_classroom(user_id=4, classroom_id=7, page=1, size=20)
+    assert exc.value.status_code == 403
+```
+
+- Dispatch `supabase.table(name)` per table with `side_effect`; an unexpected table raises
+  `KeyError`, which exposes unplanned queries.
+- For directly scoped queries assert the filter: `classroom.eq.assert_any_call("school_id", 1)`.
+- Where to patch the resolver: once the shared `app/services/tenancy.py`
+  `get_school_id_for_admin(user_id)` exists, patch it **where it is imported**
+  (`patch("app.services.<module>.get_school_id_for_admin")`). Until then patch the method
+  `_get_school_id_for_admin` (`school_admin_service.py:37`). `school_admin_event_service.py:13`
+  has a duplicate, `_get_admin_record` (returns `sch_admin_id` + `school_id`); patch that one there.
+- If you patch `supabase` but not the resolver, `_get_school_id_for_admin` reads the
+  `school_administrator` table from your mock; route it or patch the resolver.
+- Doctor/representante scopes resolve through `doctor_to_school` / `parent` +
+  `student_representative`: mock those tables the same way (see `vitaly-tenant-isolation`).
+
+### Assert error bodies through the envelope
+
+```python
+assert response.status_code == 404
+assert response.json()["success"] is False
+assert "no existe" in response.json()["message"].lower()   # not response.json()["detail"]
+```
+
+Service-level tests catch the raw exception instead:
+`with pytest.raises(HTTPException) as exc: ...; assert exc.value.status_code == 404`.
+
+## Legacy code vs the standard
+
+Some services still answer an **empty collection with 404** (e.g. `get_students_by_classroom`,
+`get_academic_grades`). Do not write a test that enshrines it. Either fix the service (Boy Scout
+rule, `vitaly-architecture`) or mark the standard test
+`@pytest.mark.xfail(strict=True, reason="legacy 404 on empty list")` so it flips red when fixed
+(the example does this).
+
+## Mocks do not prove isolation
+
+A `MagicMock` client returns what you give it; it proves the filter was **called**, not that
+data cannot leak. Real isolation (and any RLS policy) needs a test against a real
+Postgres/Supabase with two schools (see `vitaly-tenant-isolation`).
+
+## Run
 
 ```bash
-# Correr todos los tests del repositorio
-pytest
-
-# Correr los tests de una feature específica con reporte detallado
+pip install -r requirements-dev.txt # pytest lives here, not in requirements.txt
+pytest                              # pytest.ini: pythonpath=., testpaths=tests
 pytest tests/test_<feature>.py -v
-
-# Correr tests con stop en primer fallo
 pytest tests/test_<feature>.py -x
 ```
+
+Importing `app.main` builds the global supabase client from settings, so `SUPABASE_URL` and
+`SUPABASE_KEY` must be set (`.env`); no request is made until a query executes.

@@ -124,10 +124,9 @@ def test_every_route_is_gated_or_public():
     assert not offenders, f"Ungated routes without # PUBLIC_ROUTE: {offenders}"
 ```
 
-Pair it with negative tests per gate: wrong role → 403, missing/revoked token → 401. Caveat:
-`deps.py` uses `HTTPBearer()`, which on older FastAPI versions answers a missing header with
-403, not 401; `requirements.txt` has unpinned `fastapi[standard]>=0.110.0`, so assert the
-actual behavior of the installed version. Override
+Pair it with negative tests per gate: wrong role → 403, missing/revoked token → 401. Missing
+token → 401 is guaranteed by the pinned `fastapi[standard]>=0.122.0` (`requirements.txt`):
+security classes such as `HTTPBearer()` in `deps.py` return 401 since 0.122.0. Override
 gates with `app.dependency_overrides[get_current_doctor] = lambda: {"sub": "1", "role": "doctor"}`.
 
 ## Legacy notes
