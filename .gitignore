@@ -172,13 +172,12 @@ Thumbs.db
 
 # Agents
 # (Tracked in repository for agentic workflows)
+.atl/
 
 # Project specific ignores
 supabase/*
 !supabase/migrations/
 test_users/
-
-.cursorrules
 hierarchy_views_dashboard.md
 hierarchy_views_frontend_high_level.md
 init_instructions.txt

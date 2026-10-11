@@ -1,59 +1,76 @@
 ---
-description: Validación obligatoria de tabla vacía antes de cualquier acción
+description: "Validación de existencia previa de registros y manejo de tablas vacías en SQLAlchemy"
+globs:
+  - "app/services/**/*.py"
+  - "app/api/**/*.py"
+alwaysApply: false
 ---
-# Validación de Tabla Vacía Obligatoria
 
-Para garantizar la integridad y el correcto manejo de errores del sistema, todos los servicios y endpoints que realicen acciones sobre una tabla de la base de datos (Supabase/PostgreSQL) deben verificar primero si la tabla contiene datos.
+# Validación de Existencia y Tablas Vacías
 
-## Reglas
-1. **Verificación Previa**: Antes de ejecutar cualquier consulta de selección, actualización o eliminación masiva, se debe comprobar si existen registros en la tabla objetivo.
-2. **Manejo de Error**: Si la tabla está vacía, se debe lanzar una excepción controlada (ej. `HTTPException` con código 404 o 200 con mensaje descriptivo, según el caso de uso) indicando que no hay registros disponibles para procesar.
-3. **Optimización**: Para verificar si una tabla está vacía, se recomienda usar una consulta de conteo (`count="exact"`) o una selección limitada a un solo registro (`limit(1)`) para evitar sobrecarga.
+## 1. Scope & Context
+- **Target Area:** Servicios (`app/services/`) y endpoints (`app/api/`) que interactúan con la base de datos PostgreSQL mediante SQLAlchemy.
+- **Roles:** Database Specialist, Backend Architect.
+- **Objetivo:** Prevenir errores 500 silenciosos y fallos en cascada al operar sobre registros o tablas sin datos previos, respetando la semántica de la API REST.
 
-## Ejemplos
+## 2. Hard Constraints (Reglas Infranqueables)
+- ⛔ **NUNCA** devuelvas `HTTPException(404)` al consultar colecciones o listas vacías (`GET /users`). Las colecciones vacías deben responder con `200 OK` y `data=[]`.
+- ⛔ **NUNCA** ejecutes mutaciones (`UPDATE`, `DELETE`) asumiendo que el registro existe sin validar previamente o capturar la ausencia del registro.
+- ⛔ **NUNCA** uses el cliente REST de Supabase (`supabase.table(...)`) dentro del backend; utiliza la sesión de SQLAlchemy (`db: Session`).
 
-### Escenario: Listado de Usuarios
+## 3. Directivas Prescriptivas
 
-#### Incorrecto
+1. **Listados y Colecciones:**
+   - Si una consulta retorna una lista vacía, devuelve `APIResponse(success=True, data=[], message="No se encontraron registros")`.
+2. **Operaciones sobre Recurso Individual (`GET /item/{id}`, `PUT`, `DELETE`):**
+   - Comprueba la existencia del registro por su ID y `escuela_id`.
+   - Si no existe, lanza de inmediato `HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recurso no encontrado")`.
+3. **Tablas Catálogo / Prerrequisitos de Negocio:**
+   - Si una operación requiere que existan datos base configurados (ej. `CicloLectivo`, `CatalogoVacunas`), realiza una verificación ligera con `exists()` o `first()` antes de procesar transacciones complejas.
+
+## 4. Ejemplos Contrastados (Few-Shot)
+
+### ❌ Anti-Patrón (DON'T)
 ```python
-@router.get("/users")
-def get_users():
-    # Intenta obtener datos sin verificar si hay alguno
-    response = supabase.table("user").select("*").execute()
-    return APIResponse(data=response.data, message="Lista obtenida") # Puede devolver data=[] sin contexto
+# Mal: Retorna 404 al listar una colección vacía, o usa cliente no estándar
+@router.get("/schools", response_model=APIResponse[list[SchoolRead]])
+def list_schools(db: Session = Depends(get_db)):
+    schools = db.query(School).all()
+    if not schools:
+        # ❌ ERROR: Rompe el estándar REST (debería ser 200 con lista vacía)
+        raise HTTPException(status_code=404, detail="No hay escuelas registradas")
+    return APIResponse(success=True, data=schools, message="Escuelas obtenidas")
 ```
 
-#### Correcto
+### ✅ Patrón Estándar (DO)
 ```python
-@router.get("/users")
-def get_users():
-    # Primero verifica si existe al menos un registro
-    check = supabase.table("user").select("id", count="exact").limit(1).execute()
-    
-    if not check.data:
+# Bien: Colección retorna 200 con data=[], y mutación verifica existencia antes de actuar
+@router.get("/schools", response_model=APIResponse[list[SchoolRead]], summary="Listar escuelas")
+def list_schools(db: Session = Depends(get_db)) -> APIResponse[list[SchoolRead]]:
+    schools = school_service.get_all(db)
+    message = "Escuelas recuperadas exitosamente" if schools else "No hay escuelas registradas actualmente"
+    return APIResponse(success=True, data=schools, message=message)
+
+@router.put("/schools/{school_id}", response_model=APIResponse[SchoolRead], summary="Actualizar escuela")
+def update_school(
+    school_id: int,
+    payload: SchoolUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker([RoleEnum.ADMIN_SISTEMA]))
+) -> APIResponse[SchoolRead]:
+    school = school_service.get_by_id(db, school_id=school_id)
+    if not school:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No se encontraron registros en la tabla de usuarios. La tabla está vacía."
+            detail=f"La escuela con ID {school_id} no existe"
         )
-    
-    response = supabase.table("user").select("*").execute()
-    return APIResponse(data=response.data, message="Lista de usuarios obtenida exitosamente")
+    updated = school_service.update(db, db_obj=school, obj_in=payload)
+    return APIResponse(success=True, data=updated, message="Escuela actualizada exitosamente")
 ```
 
-### Escenario: Actualización de Escuela
-
-#### Correcto
-```python
-def update_school(school_id: int, data: dict):
-    # Verificar si existe la escuela
-    check = supabase.table("school").select("sch_id").eq("sch_id", school_id).execute()
-    
-    if not check.data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="La escuela solicitada no existe o la tabla de escuelas está vacía."
-        )
-    
-    # Proceder con la acción
-    supabase.table("school").update(data).eq("sch_id", school_id).execute()
-```
+## 5. Verificación & Auto-Corrección
+- **Checklist:**
+  - [ ] Colecciones (`GET /recursos`) retornan código 200 y array vacío cuando no hay registros.
+  - [ ] Recursos individuales (`GET/PUT/DELETE /recursos/{id}`) lanzan 404 si el recurso no existe.
+  - [ ] Uso exclusivo de `db: Session` (SQLAlchemy).
+- **Comando de Verificación:** `pytest tests/services/ tests/api/ -k "not_found or empty"`
