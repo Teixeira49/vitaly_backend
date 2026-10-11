@@ -1,185 +1,237 @@
 ---
 name: branch-pr
-description: "Create Gentle AI pull requests with issue-first checks. Trigger: creating, opening, or preparing PRs for review."
+description: >
+  PR creation workflow for estei-empresas. Overrides the global branch-pr skill
+  with project-specific conventions: branching from develop, existing labels,
+  CI pipeline, and PR template.
+  Trigger: When creating a pull request, opening a PR, or preparing changes for review.
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
-  version: "2.0"
+  author: estei-empresas
+  version: '1.0'
 ---
 
 ## When to Use
 
 Use this skill when:
+
 - Creating a pull request for any change
 - Preparing a branch for submission
-- Helping a contributor open a PR
+- Pushing changes that need review
 
 ---
 
 ## Critical Rules
 
-1. **Every PR MUST link an approved issue** — no exceptions
-2. **Every PR MUST have exactly one `type:*` label**
-3. **Automated checks must pass** before merge is possible
-4. **Blank PRs without issue linkage will be blocked** by GitHub Actions
+1. **Every PR MUST link an issue** via `Closes #N`, `Fixes #N`, or `Resolves #N` — except `chore/` and `ci/` branches
+2. **Every PR MUST add the matching label** from the project's label set
+3. **Branches ALWAYS from `develop`**, NEVER from `main` — except `hotfix/*` from `main`
+4. **PRs ALWAYS target `develop`** — except promotions (`develop` -> `staging` -> `main`) and hotfixes
+5. **No `Co-Authored-By`** trailers in commits
 
 ---
 
 ## Workflow
 
 ```
-1. Verify issue has `status:approved` label
-2. Create branch: type/description (see Branch Naming below)
+1. Verify issue exists (create one if needed)
+2. Create branch from develop: type/description
 3. Implement changes with conventional commits
-4. Run shellcheck on modified scripts
-5. Open PR using the template
-6. Add exactly one type:* label
-7. Wait for automated checks to pass
+4. Push branch
+5. Open PR using the template (.github/PULL_REQUEST_TEMPLATE.md)
+6. Add the matching label
+7. Wait for CI to pass
 ```
+
+---
+
+## Branching Strategy
+
+This project uses **GitHub Flow + Staging Gate** (see `CONTRIBUTING.md`):
+
+```
+feat/my-feature --PR--> develop --PR--> staging --PR--> main
+                          CI full       CI light        CI light
+```
+
+### Protected branches
+
+| Branch    | Role                | Receives PRs from                          |
+| --------- | ------------------- | ------------------------------------------ |
+| `develop` | Daily integration   | `feat/*`, `fix/*`, `refactor/*`, `chore/*` |
+| `staging` | Pre-production / QA | `develop`                                  |
+| `main`    | Production          | `staging`, `hotfix/*`                      |
+
+### Hotfixes
+
+```
+hotfix/critical-bug --PR--> main --backport--> develop
+                              CI full
+```
+
+1. Create `hotfix/*` from `main` (NEVER from develop)
+2. PR to `main` — CI runs FULL pipeline
+3. **Mandatory backport**: after merge to main, open PR `main -> develop` or cherry-pick
 
 ---
 
 ## Branch Naming
 
-Branch names MUST match this regex:
+Branch names MUST match:
 
 ```
-^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)\/[a-z0-9._-]+$
+^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert|hotfix)\/[a-z0-9._-]+$
 ```
 
 **Format:** `type/description` — lowercase, no spaces, only `a-z0-9._-` in description.
 
-| Type | Branch pattern | Example |
-|------|---------------|---------|
-| Feature | `feat/<description>` | `feat/user-login` |
-| Bug fix | `fix/<description>` | `fix/zsh-glob-error` |
-| Chore | `chore/<description>` | `chore/update-ci-actions` |
-| Docs | `docs/<description>` | `docs/installation-guide` |
-| Style | `style/<description>` | `style/format-scripts` |
-| Refactor | `refactor/<description>` | `refactor/extract-shared-logic` |
-| Performance | `perf/<description>` | `perf/reduce-startup-time` |
-| Test | `test/<description>` | `test/add-setup-coverage` |
-| Build | `build/<description>` | `build/update-shellcheck` |
-| CI | `ci/<description>` | `ci/add-branch-validation` |
-| Revert | `revert/<description>` | `revert/broken-setup-change` |
+Including the ticket number is encouraged when there's a Jira/GitHub issue:
+
+```
+feat/empw-123-user-registration
+fix/empw-456-iva-calculation
+refactor/resolve-tech-debt-381
+chore/upgrade-drizzle
+hotfix/critical-payment-bug
+```
+
+---
+
+## Labels
+
+This project uses simple labels. Map commit types to existing labels:
+
+| Commit type | Label to add    |
+| ----------- | --------------- |
+| `feat`      | `enhancement`   |
+| `fix`       | `bug`           |
+| `docs`      | `documentation` |
+| `refactor`  | `tech-debt`     |
+| `chore`     | (none required) |
+| `perf`      | `enhancement`   |
+| `test`      | (none required) |
+| `build`     | (none required) |
+| `ci`        | (none required) |
+
+If the PR addresses tech debt, ALWAYS add `tech-debt` regardless of commit type.
+
+---
+
+## Issue Linkage
+
+### Required (default)
+
+Every PR body MUST contain one of:
+
+```markdown
+Closes #<issue-number>
+Fixes #<issue-number>
+Resolves #<issue-number>
+```
+
+### Exempt branches
+
+PRs from these branch types do NOT require issue linkage:
+
+- `chore/*` — maintenance, dependency updates, config changes
+- `ci/*` — CI/CD pipeline changes
+
+For exempt PRs, omit the `Closes #N` line. The Summary section is still required.
 
 ---
 
 ## PR Body Format
 
-The PR template is at `.github/PULL_REQUEST_TEMPLATE.md`. Every PR body MUST contain:
+Use the template at `.github/PULL_REQUEST_TEMPLATE.md`. Sections:
 
-### 1. Linked Issue (REQUIRED)
+### 1. Linked Issue (required except for chore/ci)
 
 ```markdown
-Closes #<issue-number>
+Closes #123
 ```
 
-Valid keywords: `Closes #N`, `Fixes #N`, `Resolves #N` (case insensitive).
-The linked issue MUST have the `status:approved` label.
+### 2. Summary (always required)
 
-### 2. PR Type (REQUIRED)
+1-3 bullet points explaining WHAT and WHY. Focus on motivation, not implementation.
 
-Check exactly ONE in the template and add the matching label:
-
-| Checkbox | Label to add |
-|----------|-------------|
-| Bug fix | `type:bug` |
-| New feature | `type:feature` |
-| Documentation only | `type:docs` |
-| Code refactoring | `type:refactor` |
-| Maintenance/tooling | `type:chore` |
-| Breaking change | `type:breaking-change` |
-
-### 3. Summary
-
-1-3 bullet points of what the PR does.
-
-### 4. Changes Table
+### 3. Changes Table (required for PRs with 5+ files)
 
 ```markdown
-| File | Change |
-|------|--------|
+| File           | Change       |
+| -------------- | ------------ |
 | `path/to/file` | What changed |
 ```
 
-### 5. Test Plan
+For small PRs (< 5 files), the Summary is sufficient.
+
+### 4. Test Plan (always required)
 
 ```markdown
-- [x] Scripts run without errors: `shellcheck scripts/*.sh`
-- [x] Manually tested the affected functionality
-- [x] Skills load correctly in target agent
+- [x] Tests pass: `npx vitest run`
+- [x] TypeScript compiles: `npx tsc --noEmit`
+- [x] No new lint errors in changed files
+- [ ] Manually tested affected functionality (if UI change)
 ```
-
-### 6. Contributor Checklist
-
-All boxes must be checked:
-- Linked an approved issue
-- Added exactly one `type:*` label
-- Ran shellcheck on modified scripts
-- Skills tested in at least one agent
-- Docs updated if behavior changed
-- Conventional commit format
-- No `Co-Authored-By` trailers
-
----
-
-## Automated Checks (all must pass)
-
-| Check | Job name | What it verifies |
-|-------|----------|-----------------|
-| PR Validation | `Check Issue Reference` | Body contains `Closes/Fixes/Resolves #N` |
-| PR Validation | `Check Issue Has status:approved` | Linked issue has `status:approved` |
-| PR Validation | `Check PR Has type:* Label` | PR has exactly one `type:*` label |
-| CI | `Shellcheck` | Shell scripts pass `shellcheck` |
 
 ---
 
 ## Conventional Commits
 
-Commit messages MUST match this regex:
+Follow `CONTRIBUTING.md`. Format:
 
 ```
-^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9\._-]+\))?!?: .+
+type(scope): description
 ```
 
-**Format:** `type(scope): description` or `type: description`
+### Types
 
-- `type` — required, one of: `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, `test`
-- `(scope)` — optional, lowercase with `a-z0-9._-`
-- `!` — optional, indicates breaking change
-- `description` — required, starts after `: `
+`feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`, `build`, `revert`
 
-Type-to-label mapping:
+### Common scopes
 
-| Commit type | PR label |
-|-------------|----------|
-| `feat` | `type:feature` |
-| `fix` | `type:bug` |
-| `docs` | `type:docs` |
-| `refactor` | `type:refactor` |
-| `chore` | `type:chore` |
-| `style` | `type:chore` |
-| `perf` | `type:feature` |
-| `test` | `type:chore` |
-| `build` | `type:chore` |
-| `ci` | `type:chore` |
-| `revert` | `type:bug` |
-| `feat!` / `fix!` | `type:breaking-change` |
+| Scope       | Area                    |
+| ----------- | ----------------------- |
+| `users`     | User management         |
+| `companies` | Companies/Organizations |
+| `bookings`  | Reservations            |
+| `invoices`  | Billing                 |
+| `payments`  | Payments                |
+| `auth`      | Authentication          |
+| `api`       | REST API                |
+| `ui`        | UI components           |
+| `db`        | Database                |
+| `estei`     | Estei API integration   |
 
-Examples:
-```
-feat(scripts): add Codex support to setup.sh
-fix(skills): correct topic key format in sdd-apply
-docs(readme): update multi-model configuration guide
-refactor(skills): extract shared persistence logic
-chore(ci): add shellcheck to PR validation workflow
-perf(scripts): reduce setup.sh execution time
-style(skills): fix markdown formatting
-test(scripts): add setup.sh integration tests
-ci(workflows): add branch name validation
-revert: undo broken setup change
-feat!: redesign skill loading system
+### Rules
+
+1. English for commit messages
+2. Lowercase first letter in description
+3. No period at end
+4. Max 72 characters in first line
+5. Imperative mood: "add" not "added" or "adding"
+6. Breaking changes: add `!` after type/scope
+
+---
+
+## CI Pipeline
+
+PRs to `develop` run the **full** pipeline:
+
+| Job               | What it checks                                              |
+| ----------------- | ----------------------------------------------------------- |
+| `static-analysis` | ESLint + Prettier format + TypeScript typecheck             |
+| `tests`           | `npm run test:coverage` (Vitest)                            |
+| `build`           | `npm run build` (Vite client + esbuild server)              |
+| `migration-check` | Drizzle schema drift detection                              |
+| `analysis`        | `npm audit` + dead code check (informational, never blocks) |
+| `ci-passed`       | Gate — all required jobs must pass                          |
+
+### Before pushing, verify locally
+
+```bash
+npx vitest run          # tests pass
+npx tsc --noEmit        # typecheck clean
+npx eslint <files>      # no new errors in changed files
 ```
 
 ---
@@ -187,16 +239,22 @@ feat!: redesign skill loading system
 ## Commands
 
 ```bash
-# Create branch
-git checkout -b feat/my-feature main
-
-# Run shellcheck before pushing
-shellcheck scripts/*.sh
+# Create branch from develop
+git checkout develop && git pull origin develop
+git checkout -b feat/empw-123-my-feature
 
 # Push and create PR
-git push -u origin feat/my-feature
-gh pr create --title "feat(scope): description" --body "Closes #N"
+git push -u origin feat/empw-123-my-feature
+gh pr create --base develop \
+  --title "feat(scope): description" \
+  --label "enhancement" \
+  --body "Closes #123
 
-# Add type label to PR
-gh pr edit <pr-number> --add-label "type:feature"
+## Summary
+
+- What this PR does and why
+"
+
+# Add label if not set during creation
+gh pr edit <pr-number> --add-label "enhancement"
 ```
