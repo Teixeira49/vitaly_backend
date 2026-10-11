@@ -1,30 +1,6 @@
 {
   "version": 1,
   "skills": {
-    "apscheduler_celery_beat": {
-      "source": "davidcastagnetoa/skills",
-      "sourceType": "github",
-      "skillPath": "skills/apscheduler_celery_beat/SKILL.md",
-      "computedHash": "063b003e019103b617a947e252de67b7795452c1b74e60f14babf42cbc16ff53"
-    },
-    "background-jobs-designer": {
-      "source": "patricio0312rev/skills",
-      "sourceType": "github",
-      "skillPath": "backend/background-jobs-designer/SKILL.md",
-      "computedHash": "a9920f93faf68b788a42f9b20c95b50bb138e99453e67f2a49bfc6b1781d20b1"
-    },
-    "celery": {
-      "source": "davidcastagnetoa/skills",
-      "sourceType": "github",
-      "skillPath": "skills/celery/SKILL.md",
-      "computedHash": "b1a49f01db8d52906e19adb7d039db1a967dceee09e4bc01b3c83c2669a1301d"
-    },
-    "celery_redis": {
-      "source": "davidcastagnetoa/skills",
-      "sourceType": "github",
-      "skillPath": "skills/celery_redis/SKILL.md",
-      "computedHash": "65929bd3b0f1d90357a0b460eea2159f85327ac777b50b6507748adb5a013ccb"
-    },
     "find-skills": {
       "source": "vercel-labs/skills",
       "sourceType": "github",
@@ -37,12 +13,6 @@
       "skillPath": "skills/skill-creator/SKILL.md",
       "computedHash": "5ea13a6d9f0d4bb694405d79acd00cadec0d21bb138c4dd10fcf3c500cb835c2"
     },
-    "socket-io": {
-      "source": "claude-dev-suite/claude-dev-suite",
-      "sourceType": "github",
-      "skillPath": "skills/real-time/socket-io/SKILL.md",
-      "computedHash": "db530d917a8ad12522e3eaf040db5101bf7ac6cef066814577b8fb909a5b429b"
-    },
     "task-scheduling": {
       "source": "proyecto26/system-design-skills",
       "sourceType": "github",
@@ -54,18 +24,6 @@
       "sourceType": "github",
       "skillPath": "skills/websocket-engineer/SKILL.md",
       "computedHash": "20fa13c59db0fdce66fe0346beffa6d42b36e981dfef74380567d5f2dfe8bc0d"
-    },
-    "websocket-realtime-builder": {
-      "source": "patricio0312rev/skills",
-      "sourceType": "github",
-      "skillPath": "backend/websocket-realtime-builder/SKILL.md",
-      "computedHash": "b86b5af780712fe94d063208ad9f5bc95589458813b14365eb1786e01ef0728a"
-    },
-    "websocket-security": {
-      "source": "yaklang/hack-skills",
-      "sourceType": "github",
-      "skillPath": "skills/websocket-security/SKILL.md",
-      "computedHash": "52d2214ef4a647e09cf63a01ff1dff8605d60cac17ee814e700eb51085d80025"
     }
   }
 }
