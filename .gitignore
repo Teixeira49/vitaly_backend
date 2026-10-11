@@ -171,7 +171,7 @@ Thumbs.db
 .supabase/
 
 # Agents
-.agents/
+# (Tracked in repository for agentic workflows)
 
 # Project specific ignores
 supabase/*
