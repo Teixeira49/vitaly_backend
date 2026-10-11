@@ -23,9 +23,9 @@ La definición completa de cada rol (misión, dominio, reglas de oro, handoffs y
 | Rol | Dominio | Trigger | Definición |
 |-----|---------|---------|------------|
 | 🏗️ Backend Architect | Estructura de módulos, Service-Pattern, FastAPI, `APIResponse[T]` y esquemas Pydantic | Cambios en rutas, nuevos módulos o refactorización de lógica base | [`.agents/roles/backend-architect-agent.md`](roles/backend-architect-agent.md) |
-| 🛡️ Security Sentinel | Autenticación JWT, RBAC (gates `get_current_*`), protección de PII/PHR y seguridad en red | Gates `Depends(get_current_*)`, tokens JWT o acceso a datos sensibles de salud | [`.agents/roles/security-sentinel-agent.md`](roles/security-sentinel-agent.md) |
-| 🗄️ Database Specialist | Cliente supabase-py, migraciones en `supabase/migrations/` y aislamiento por `school_id` | Queries complejos, cambios de esquema o aislamiento de datos por escuela | [`.agents/roles/database-specialist-agent.md`](roles/database-specialist-agent.md) |
-| 🩺 Medical Domain Guardian | Lógica médica: IMC, triaje clínico e historias médicas (dominio v2.1) | Métricas de salud, diagnósticos o flujos de eventos médicos escolares | [`.agents/roles/medical-domain-agent.md`](roles/medical-domain-agent.md) |
+| 🛡️ Security Sentinel | Autenticación JWT, RBAC (gates `get_current_*`), auditoría del aislamiento por `school_id`, protección de PII/PHR y seguridad en red | Gates `Depends(get_current_*)`, tokens JWT, acceso a datos sensibles de salud o revisión de fugas entre escuelas | [`.agents/roles/security-sentinel-agent.md`](roles/security-sentinel-agent.md) |
+| 🗄️ Database Specialist | Cliente supabase-py, migraciones en `supabase/migrations/` e implementación del aislamiento por `school_id` | Queries complejos, cambios de esquema o implementación del filtrado por escuela | [`.agents/roles/database-specialist-agent.md`](roles/database-specialist-agent.md) |
+| 🩺 Medical Domain Guardian | Lógica médica: IMC/BMI, `medical_case` y `student_metrics` (triaje y percentiles planificados) | Cálculo o clasificación del IMC, casos médicos o métricas de salud | [`.agents/roles/medical-domain-agent.md`](roles/medical-domain-agent.md) |
 
 ---
 
