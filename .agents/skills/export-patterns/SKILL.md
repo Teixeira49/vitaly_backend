@@ -1,162 +1,118 @@
 ---
 name: export-patterns
-description: >
-  Patrones para exportaciones CSV/Excel y descargas de archivos: sanitización
-  contra CSV injection, headers HTTP correctos y streaming. Usar cuando se
-  agregue o modifique un endpoint de exportación o descarga de datos.
+description: FastAPI CSV/Excel export endpoints for Vitaly - StreamingResponse, Content-Type/Content-Disposition headers, CSV injection sanitization, school_id filtering, role gates, mandatory audit entry and streaming for large sets. Trigger: adding or modifying an export, report download or file-generating endpoint.
 metadata:
-  owner: estei-empresas
+  author: vitaly
+  owner: vitaly-backend
+  version: "1.0"
   format: agent-skills-v1
 ---
 
-# Export Patterns — Exportaciones CSV y Excel
+# Export Patterns (Vitaly, FastAPI)
 
-## Seguridad: CSV injection
+## Envelope exception
 
-CSV injection ocurre cuando un valor empieza con `=`, `+`, `-`, `@`, `\t` o `\r\n` — Excel los interpreta como fórmulas y puede ejecutar código malicioso en la máquina del usuario.
+`.agents/rules/standard-response.md` documents an explicit exception for file downloads: they cannot be wrapped in JSON, so exports return a raw `StreamingResponse` on success. Per that rule, declare `response_class=StreamingResponse` plus `responses={200: {"content": {"text/csv": {}}}}` so `/docs` stays honest. **Errors (401/403/404/422) still use the JSON envelope** via the global exception handlers.
 
-**Función canónica** — `ExportController.sanitizeForCSV(value)`:
+## Rules
 
-1. Convierte a string, devuelve `''` si es `null`/`undefined`.
-2. Si empieza con carácter peligroso → prefija con `'` (apóstrofe).
-3. Si contiene `,`, `"` o saltos de línea → envuelve en comillas dobles y escapa `"` → `""`.
+1. **Role gate** with the existing `get_current_*` dependency from `app/api/deps.py` (see `vitaly-rbac`).
+2. **Tenant filter**: `school_id` resolved server-side and applied to every query (see `vitaly-tenant-isolation`). Never accept it from query params for school roles.
+3. **Sanitize every cell** (including headers) against CSV/formula injection.
+4. **Audit before streaming** with `critical=True` (see `audit-logging`): type, record count, filters.
+5. **Sync `def`** handler and service, consistent with the rest of the codebase (blocking supabase-py runs in the threadpool).
+6. **No cache** and an attachment filename with a date.
+7. Generation logic lives in a service (e.g. `school_admin_export_service.py`); the endpoint only wires HTTP.
 
-**Regla**: todo valor que va a un CSV pasa por `sanitizeForCSV`. Sin excepciones. Incluir headers.
+## CSV injection
 
-## Headers HTTP obligatorios
+A value starting with `=`, `+`, `-`, `@`, tab (`\t`) or CR (`\r`) can be executed as a formula by Excel/Sheets. Prefix it with `'`. Let the `csv` module handle quoting.
 
-### CSV
+```python
+DANGEROUS_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
-```ts
-res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-res.setHeader('Pragma', 'no-cache');
-res.setHeader('Expires', '0');
+def sanitize_cell(value: object) -> str:
+    text = "" if value is None else str(value)
+    return "'" + text if text.startswith(DANGEROUS_PREFIXES) else text
 ```
 
-### Excel (.xlsx)
+## CSV endpoint
 
-```ts
-res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+Illustrative: `get_school_id`, `school_admin_export_service` and `audit_service` are names to create, not existing code.
+
+```python
+import csv, io
+from datetime import date
+from fastapi.responses import StreamingResponse
+
+def _iter_csv(header: list[str], rows):
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([sanitize_cell(h) for h in header])
+    yield "\ufeff" + buf.getvalue()  # BOM so Excel reads UTF-8 accents
+    for row in rows:
+        buf.seek(0); buf.truncate(0)
+        writer.writerow([sanitize_cell(v) for v in row])
+        yield buf.getvalue()
+
+@router.get("/students/export", response_class=StreamingResponse,
+            summary="Export students (CSV)",
+            responses={200: {"content": {"text/csv": {}}}})
+def export_students(current_user: dict = Depends(get_current_admin_escuela)):
+    """Export the school's students as CSV. Scoped by school_id; admin_escuela only.
+
+    Raises:
+        HTTPException: 401/403 from the gate; 500 if the audit insert fails.
+    """
+    school_id = school_admin_service.get_school_id(current_user["sub"])
+    rows = school_admin_export_service.iter_students(school_id)  # paginated generator
+    audit_service.record(actor=current_user, action="export", entity="student",
+                         entity_id="*", school_id=school_id,
+                         metadata={"export_type": "students_csv"}, critical=True)
+    filename = f"students_{date.today().isoformat()}.csv"
+    return StreamingResponse(
+        _iter_csv(["ID", "Name", "Grade"], rows),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                 "Cache-Control": "no-store"},
+    )
 ```
 
-**Por qué Cache-Control**: el navegador no debe cachear exportaciones — los datos cambian y pueden contener información sensible.
+If an exact `record_count` is required in the audit row, count first (`select("id", count="exact")`) with the same filters.
 
-## Patrón CSV
+## Excel (.xlsx)
 
-```ts
-// 1. Generar nombre de archivo con fecha
-const filename = `entidades_${new Date().toISOString().split('T')[0]}.csv`;
+- Media type: `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`.
+- Use `openpyxl` with `Workbook(write_only=True)` for large sets, save to `io.BytesIO`, and return it through `StreamingResponse`. Adding the dependency is a `build` change: declare it in the PR.
+- Sanitize string cells the same way (formulas in xlsx are just as dangerous).
 
-// 2. Definir headers y filas (arrays de primitivos)
-const headers = ['ID', 'Nombre', 'Estado'];
-const rows = data.map((item) => [item.id, item.name, item.status]);
+## Large datasets
 
-// 3. Generar contenido — usar generateCSV() del ExportController
-const csvContent = this.generateCSV(headers, rows);
+- Page through supabase-py with `.range(start, end)` (e.g. 1000 rows per page) inside a generator; never `select("*")` the whole table into memory.
+- Select only the exported columns; never export PHR fields unless the feature explicitly requires them and the role is allowed.
 
-// 4. Audit log ANTES de enviar
-await this.auditService.logDataExport(
-  this.auditService.extractContextFromRequest(req),
-  'nombre_export_type', // snake_case, descriptivo
-  rows.length,
-  { filtros, aplicados }
-);
+## Anti-patterns
 
-// 5. Headers + send
-res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-res.setHeader('Pragma', 'no-cache');
-res.setHeader('Expires', '0');
-res.status(200).send(csvContent);
-```
-
-## Patrón Excel
-
-```ts
-// 1. Crear workbook y worksheet
-const workbook = new ExcelJS.Workbook();
-const worksheet = workbook.addWorksheet('Nombre Hoja');
-
-// 2. Definir columnas con width
-worksheet.columns = [
-  { header: 'Columna', key: 'key', width: 20 },
-];
-
-// 3. Estilizar header row (obligatorio — legibilidad)
-const headerRow = worksheet.getRow(1);
-headerRow.font = { bold: true };
-headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
-headerRow.alignment = { vertical: 'middle', horizontal: 'left' };
-
-// 4. Agregar filas + formatear celdas numéricas
-data.forEach(item => {
-  const row = worksheet.addRow({ key: item.value });
-  row.getCell('montoUSD').numFmt = '"$"#,##0.00';
-});
-
-// 5. Serializar a Buffer
-const buffer = await workbook.xlsx.writeBuffer();
-const filename = `reporte_${format(new Date(), 'yyyyMMdd_HHmmss')}.xlsx`;
-
-// 6. Audit log ANTES de enviar
-await this.auditService.logDataExport(..., rows.length, filters);
-
-// 7. Headers + send buffer
-res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-res.send(buffer);
-```
-
-**Lógica compleja**: encapsularla en un `*ExportService` en `application/services/` (ver `FinancialExportService`, `DepartmentExportService`). El controller solo hace wiring HTTP y audit.
-
-## Audit logging
-
-Usar `AuditLogService.logDataExport()` en **todos** los endpoints de exportación:
-
-```ts
-await this.auditService.logDataExport(
-  this.auditService.extractContextFromRequest(req), // contexto: userId, IP, userAgent
-  'reservation_data', // tipo de export — snake_case
-  reservationData.length, // cantidad de registros exportados
-  { role, clientId, dateFrom, dateTo } // filtros aplicados (puede ser undefined)
-);
-```
-
-Esto registra: `DATA_EXPORTED` sobre `REPORT`, con `exportType`, `recordCount`, `filters`, `exportedAt`.
-
-**Cuándo**: siempre después de generar el contenido y antes de enviar la respuesta. Si la generación falla, loggear el error con `logAction` marcando `success: false`.
-
-## Anti-patrones
-
-- **Sin sanitización CSV**: no procesar valores directamente. Un nombre de empresa `=CMD|'/C calc'!A0` puede ejecutar una calculadora en la máquina del usuario.
-- **Cachear respuestas de export**: nunca poner `Cache-Control: public` ni omitir el header — los CDNs o el browser pueden servir datos stale o de otro usuario.
-- **No loggear**: toda exportación es trazabilidad financiera/operativa. Sin log no hay auditoría.
-- **Generar en memoria para datasets grandes**: usar streams o paginación en la query si el dataset puede superar ~50k filas. `workbook.xlsx.writeBuffer()` carga todo en RAM.
-- **Instanciar repos en el controller**: el `ExportController` instancia repositorios en métodos individuales vía `import()` dinámico para el Excel financiero — aceptable por legado, pero lo correcto es inyectarlos en el constructor.
-
-## Referencia canónica
-
-`ExportController.exportReservationData()` — hace todo bien:
-
-- Sanitiza con `generateCSV()` → `sanitizeForCSV()`
-- Llama `logDataExport()` con tipo, count y filtros de contexto
-- Setea los 5 headers (incluye `Pragma` y `Expires`)
-- Maneja errores con `logAction` + `success: false`
+- Building the whole file in memory for unbounded tables.
+- Writing raw values without `sanitize_cell`.
+- Missing `Cache-Control: no-store` on health data.
+- Accepting `school_id` from the client, or skipping the audit entry.
+- `async def` handlers calling blocking supabase-py.
 
 ## Checklist
 
-Antes de agregar un endpoint de exportación:
+- [ ] `get_current_*` gate and server-side `school_id` filter.
+- [ ] Every cell and header goes through `sanitize_cell`.
+- [ ] `Content-Type`, `Content-Disposition` (dated filename) and `Cache-Control: no-store` set.
+- [ ] Audit recorded with `critical=True` before streaming.
+- [ ] Paginated generator for large sets; only required columns.
+- [ ] Endpoint follows the file-download exception in `standard-response.md` (`response_class` + `responses={200: {"content": ...}}`).
+- [ ] Tests: role matrix, tenant isolation, injection payload (`=1+1`) is prefixed (see `vitaly-feature-testing`).
 
-- [ ] ¿Los valores CSV pasan por `sanitizeForCSV`? (vía `generateCSV`)
-- [ ] ¿Se setean los 3 headers mínimos? (`Content-Type`, `Content-Disposition`, `Cache-Control`)
-- [ ] ¿Se llama `logDataExport` con tipo, count y filtros?
-- [ ] ¿El nombre de archivo incluye timestamp o fecha?
-- [ ] ¿Los errores se loggean con `logAction` + `success: false`?
-- [ ] ¿La lógica compleja está en un `*ExportService`, no en el controller?
-- [ ] ¿El endpoint está registrado en `shared/access-control/`?
+## References
+
+- Rule `.agents/rules/standard-response.md` — explicit envelope exception for file downloads and OpenAPI declarations.
+- Skill `vitaly-tenant-isolation` — server-side `school_id` resolution from token `sub`.
+- Skill `vitaly-rbac` — role gates using `Depends(get_current_*)`.
+- Skill `audit-logging` — audit entry schema, sensitivity handling, and recording before streaming.
+- Skill `fastapi-code-review` — sync `def` handlers to avoid event loop blocking with `supabase-py`.
