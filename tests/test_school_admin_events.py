@@ -1,0 +1,471 @@
+"""
+Tests for School Admin Events endpoints and service layer:
+  - POST /api/v1/school-admin/events/ (create_event)
+  - GET /api/v1/school-admin/events/ (get_events)
+  - GET /api/v1/school-admin/events/by-month (get_events_by_month)
+  - GET /api/v1/school-admin/events/{event_id} (get_event_detail)
+  - PATCH /api/v1/school-admin/events/{event_id}/cancel (cancel_event)
+  - PUT /api/v1/school-admin/events/{event_id} (update_event)
+
+Adheres strictly to the 5 laws of vitaly-feature-testing:
+  1. APIResponse envelope verification.
+  2. Multi-tenancy isolation via server-resolved school_id (403 foreign school / 400 foreign classrooms or doctors).
+  3. Deterministic supabase-py mock.
+  4. 404 for missing single entities / 200 with empty list for empty collections.
+  5. RBAC matrix: 403 unauthorized role, 401 unauthenticated, 422 schema validation.
+"""
+try:
+    from datetime import UTC
+except ImportError:
+    from datetime import timezone
+    UTC = timezone.utc  # noqa: UP017
+from datetime import datetime
+from unittest.mock import MagicMock, patch
+
+import pytest
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
+
+from app.api.deps import get_current_admin_escuela, get_current_user_token
+from app.core.security import create_access_token
+from app.main import app
+from app.services.auth_service import auth_service
+from app.services.school_admin_event_service import school_admin_event_service
+
+SERVICE_MODULE = "app.services.school_admin_event_service"
+BASE_URL = "/api/v1/school-admin/events"
+SCHOOL_ID = 1
+ADMIN_RECORD = {"sch_admin_id": 10, "school_id": SCHOOL_ID}
+
+
+# ──────────────────────────────────────────────────────────
+# Helpers: realistic JWT payloads and chainable supabase-py mock
+# ──────────────────────────────────────────────────────────
+
+def admin_payload(user_id: int = 4) -> dict:
+    """Claims present in JWT for admin_escuela (no school_id in JWT)."""
+    return {
+        "sub": str(user_id),
+        "email": "admin@colegio.test",
+        "role": "admin_escuela",
+        "name": "Laura Pérez",
+        "gender": "FEMENINO",
+        "administrative_position": "Directora",
+        "school": "Colegio San Ignacio",
+    }
+
+
+def make_query(data=None, count=None) -> MagicMock:
+    """Chainable mock for supabase-py queries."""
+    query = MagicMock()
+    for method in (
+        "select", "eq", "neq", "in_", "is_", "ilike", "gte", "lte",
+        "order", "range", "limit", "insert", "update", "delete", "or_"
+    ):
+        getattr(query, method).return_value = query
+    query.execute.return_value = MagicMock(data=[] if data is None else data, count=count)
+    return query
+
+
+def route_tables(mock_supabase: MagicMock, **tables: MagicMock) -> None:
+    """Route supabase.table(...) calls to table-specific query mocks."""
+    mock_supabase.table.side_effect = lambda name: tables.get(name, make_query([]))
+
+
+# ──────────────────────────────────────────────────────────
+# Fixtures
+# ──────────────────────────────────────────────────────────
+
+@pytest.fixture
+def admin_client():
+    """Client with get_current_admin_escuela overridden."""
+    app.dependency_overrides[get_current_admin_escuela] = lambda: admin_payload()
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def client():
+    """Client with no overrides: real authentication/RBAC gates run."""
+    app.dependency_overrides.clear()
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ──────────────────────────────────────────────────────────
+# 1. POST / - Crear Evento
+# ──────────────────────────────────────────────────────────
+
+def test_create_event_endpoint_success(admin_client):
+    """Verifica respuesta 200 con envelope para creación de evento."""
+    fake_data = {
+        "event_id": 5,
+        "title": "Jornada de Vacunación",
+        "classrooms_linked": 2,
+        "doctors_linked": 1
+    }
+    payload = {
+        "title": "Jornada de Vacunación",
+        "description": "Vacunación general",
+        "init_time": "2026-05-10T08:00:00Z",
+        "ent_time": "2026-05-10T12:00:00Z",
+        "classroom_ids": [1, 2],
+        "doctor_ids": [3]
+    }
+    with patch.object(school_admin_event_service, "create_event", return_value=fake_data) as mock_svc:
+        response = admin_client.post(f"{BASE_URL}/", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert "Evento creado exitosamente" in body["message"]
+    assert body["data"]["event_id"] == 5
+    mock_svc.assert_called_once()
+
+
+def test_create_event_service_success():
+    """Prueba creación de evento e inserción de participaciones para aulas y doctores."""
+    event_query = make_query([{"id": 10}])
+    part_query = make_query([{"id": 1}])
+
+    with patch.object(school_admin_event_service, "_get_admin_record", return_value=ADMIN_RECORD), \
+         patch.object(school_admin_event_service, "_get_school_classroom_ids", return_value=[1, 2]), \
+         patch.object(school_admin_event_service, "_get_school_doctor_ids", return_value=[5]), \
+         patch(f"{SERVICE_MODULE}.supabase") as mock_supabase:
+        route_tables(mock_supabase, event=event_query, event_participation=part_query)
+
+        payload_mock = MagicMock()
+        payload_mock.title = "Jornada de Salud"
+        payload_mock.description = "Revisión general"
+        payload_mock.init_time = datetime(2026, 5, 1, 8, 0, tzinfo=UTC)
+        payload_mock.ent_time = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+        payload_mock.classroom_ids = [1, 2]
+        payload_mock.doctor_ids = [5]
+
+        result = school_admin_event_service.create_event(user_id=4, payload=payload_mock)
+
+    assert result["event_id"] == 10
+    assert result["classrooms_linked"] == 2
+    assert result["doctors_linked"] == 1
+    event_query.insert.assert_called_once()
+    part_query.insert.assert_called_once()
+
+
+def test_create_event_foreign_classroom_returns_400():
+    """Intentar crear evento con salones de otra escuela -> 400 Bad Request."""
+    with patch.object(school_admin_event_service, "_get_admin_record", return_value=ADMIN_RECORD), \
+         patch.object(school_admin_event_service, "_get_school_classroom_ids", return_value=[1, 2]):
+        payload_mock = MagicMock()
+        payload_mock.classroom_ids = [999]  # Foreign classroom
+        payload_mock.doctor_ids = []
+
+        with pytest.raises(HTTPException) as exc:
+            school_admin_event_service.create_event(user_id=4, payload=payload_mock)
+
+    assert exc.value.status_code == 400
+    assert "no pertenece a tu escuela" in exc.value.detail
+
+
+def test_create_event_foreign_doctor_returns_400():
+    """Intentar crear evento con doctores no asignados a la escuela -> 400 Bad Request."""
+    with patch.object(school_admin_event_service, "_get_admin_record", return_value=ADMIN_RECORD), \
+         patch.object(school_admin_event_service, "_get_school_classroom_ids", return_value=[1]), \
+         patch.object(school_admin_event_service, "_get_school_doctor_ids", return_value=[10]):
+        payload_mock = MagicMock()
+        payload_mock.classroom_ids = [1]
+        payload_mock.doctor_ids = [999]  # Foreign doctor
+
+        with pytest.raises(HTTPException) as exc:
+            school_admin_event_service.create_event(user_id=4, payload=payload_mock)
+
+    assert exc.value.status_code == 400
+    assert "no está asignado a tu escuela" in exc.value.detail
+
+
+# ──────────────────────────────────────────────────────────
+# 2. GET / - Listado Paginado de Eventos
+# ──────────────────────────────────────────────────────────
+
+def test_get_events_endpoint_success(admin_client):
+    """Verifica respuesta 200 con envelope para listado de eventos."""
+    fake_data = {
+        "data": [
+            {
+                "id": 1,
+                "title": "Feria de Ciencias",
+                "description": "Evento escolar",
+                "init_time": "2026-06-01T08:00:00Z",
+                "ent_time": "2026-06-01T14:00:00Z"
+            }
+        ],
+        "total": 1,
+        "page": 1,
+        "size": 20
+    }
+    with patch.object(school_admin_event_service, "get_events", return_value=fake_data) as mock_svc:
+        response = admin_client.get(f"{BASE_URL}/?page=1&size=20")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert "Eventos obtenidos exitosamente" in body["message"]
+    assert body["data"]["total"] == 1
+    mock_svc.assert_called_once_with(user_id=4, page=1, size=20)
+
+
+def test_get_events_empty_collection(admin_client):
+    """Sin eventos registrados retorna 200 con data=[] (regla empty-table-validation)."""
+    with patch.object(school_admin_event_service, "_get_admin_record", return_value=ADMIN_RECORD), \
+         patch(f"{SERVICE_MODULE}.supabase") as mock_supabase:
+        route_tables(mock_supabase, event_participation=make_query([]))
+        response = admin_client.get(f"{BASE_URL}/")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["data"]["data"] == []
+    assert body["data"]["total"] == 0
+
+
+# ──────────────────────────────────────────────────────────
+# 3. GET /by-month - Eventos por Mes
+# ──────────────────────────────────────────────────────────
+
+def test_get_events_by_month_endpoint_success(admin_client):
+    """Verifica respuesta 200 para consulta de eventos por mes."""
+    fake_data = {
+        "data": [
+            {
+                "id": 2,
+                "title": "Evaluación Médica",
+                "init_time": "2026-04-15T09:00:00Z",
+                "ent_time": "2026-04-15T12:00:00Z"
+            }
+        ],
+        "year": 2026,
+        "month": 4,
+        "total": 1
+    }
+    with patch.object(school_admin_event_service, "get_events_by_month", return_value=fake_data):
+        response = admin_client.get(f"{BASE_URL}/by-month?year=2026&month=4")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert "Eventos del mes obtenidos exitosamente" in body["message"]
+    assert body["data"]["total"] == 1
+
+
+def test_get_events_by_month_empty(admin_client):
+    """Mes sin eventos retorna 200 con data=[] y total=0."""
+    with patch.object(school_admin_event_service, "_get_admin_record", return_value=ADMIN_RECORD), \
+         patch(f"{SERVICE_MODULE}.supabase") as mock_supabase:
+        route_tables(mock_supabase, event_participation=make_query([]))
+        response = admin_client.get(f"{BASE_URL}/by-month?year=2026&month=12")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["data"]["data"] == []
+    assert body["data"]["total"] == 0
+
+
+# ──────────────────────────────────────────────────────────
+# 4. GET /{event_id} - Detalle del Evento
+# ──────────────────────────────────────────────────────────
+
+def test_get_event_detail_endpoint_success(admin_client):
+    """Verifica detalle de evento con salones, doctores y creador."""
+    fake_data = {
+        "event": {
+            "id": 1,
+            "title": "Jornada de Vacunación",
+            "init_time": "2026-05-10T08:00:00Z",
+            "ent_time": "2026-05-10T12:00:00Z"
+        },
+        "classrooms": [{"id": 1, "label": "PRIMARIA 1 A"}],
+        "doctors": [{"id": 5, "fullname": "Dr. Carlos Ramos"}],
+        "created_by": {"name": "Laura Pérez"}
+    }
+    with patch.object(school_admin_event_service, "get_event_detail", return_value=fake_data):
+        response = admin_client.get(f"{BASE_URL}/1")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert "Detalle del evento obtenido exitosamente" in body["message"]
+    assert body["data"]["event"]["id"] == 1
+
+
+def test_get_event_detail_not_found_returns_404():
+    """Evento inexistente o cancelado -> 404 Not Found."""
+    with patch.object(school_admin_event_service, "_get_admin_record", return_value=ADMIN_RECORD), \
+         patch(f"{SERVICE_MODULE}.supabase") as mock_supabase:
+        route_tables(mock_supabase, event=make_query([]))
+        with pytest.raises(HTTPException) as exc:
+            school_admin_event_service.get_event_detail(user_id=4, event_id=999)
+
+    assert exc.value.status_code == 404
+    assert "No existe un evento activo" in exc.value.detail
+
+
+def test_get_event_detail_foreign_school_returns_403():
+    """Evento perteneciente a otra escuela (sin participación del admin) -> 403 Forbidden."""
+    event_row = {"id": 10, "title": "Evento Ajeno"}
+    with patch.object(school_admin_event_service, "_get_admin_record", return_value=ADMIN_RECORD), \
+         patch(f"{SERVICE_MODULE}.supabase") as mock_supabase:
+        route_tables(
+            mock_supabase,
+            event=make_query([event_row]),
+            event_participation=make_query([])  # No participation for this admin
+        )
+        with pytest.raises(HTTPException) as exc:
+            school_admin_event_service.get_event_detail(user_id=4, event_id=10)
+
+    assert exc.value.status_code == 403
+    assert "No tienes permiso" in exc.value.detail
+
+
+# ──────────────────────────────────────────────────────────
+# 5. PATCH /{event_id}/cancel - Cancelar Evento
+# ──────────────────────────────────────────────────────────
+
+def test_cancel_event_endpoint_success(admin_client):
+    """Verifica cancelación de evento."""
+    fake_data = {"event_id": 5, "status": "canceled"}
+    with patch.object(school_admin_event_service, "cancel_event", return_value=fake_data):
+        response = admin_client.patch(f"{BASE_URL}/5/cancel")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert "Evento cancelado exitosamente" in body["message"]
+    assert body["data"]["status"] == "canceled"
+
+
+def test_cancel_event_service_success():
+    """Valida actualización de is_canceled tanto en event como en event_participation."""
+    event_query = make_query([{"id": 5}])
+    part_query = make_query([{"id": 1}])
+
+    with patch.object(school_admin_event_service, "_get_admin_record", return_value=ADMIN_RECORD), \
+         patch.object(school_admin_event_service, "_validate_event_ownership", return_value={"id": 5}), \
+         patch(f"{SERVICE_MODULE}.supabase") as mock_supabase:
+        route_tables(mock_supabase, event=event_query, event_participation=part_query)
+        result = school_admin_event_service.cancel_event(user_id=4, event_id=5)
+
+    assert result["status"] == "canceled"
+    event_query.update.assert_called_once()
+    part_query.update.assert_called_once()
+
+
+# ──────────────────────────────────────────────────────────
+# 6. PUT /{event_id} - Actualizar Evento
+# ──────────────────────────────────────────────────────────
+
+def test_update_event_endpoint_success(admin_client):
+    """Verifica actualización de metadatos de evento vía PUT."""
+    fake_data = {"id": 5, "title": "Título Modificado"}
+    payload = {"title": "Título Modificado"}
+    with patch.object(school_admin_event_service, "update_event", return_value=fake_data):
+        response = admin_client.put(f"{BASE_URL}/5", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert "Evento actualizado exitosamente" in body["message"]
+
+
+def test_update_event_invalid_dates_returns_400():
+    """ent_time anterior a init_time -> 400 Bad Request."""
+    event_row = {
+        "id": 5,
+        "init_time": "2026-05-10T12:00:00Z",
+        "ent_time": "2026-05-10T14:00:00Z"
+    }
+    with patch.object(school_admin_event_service, "_get_admin_record", return_value=ADMIN_RECORD), \
+         patch.object(school_admin_event_service, "_validate_event_ownership", return_value=event_row):
+        # Update ent_time before init_time
+        payload = {"ent_time": "2026-05-10T08:00:00Z"}
+        with pytest.raises(HTTPException) as exc:
+            school_admin_event_service.update_event(user_id=4, event_id=5, payload=payload)
+
+    assert exc.value.status_code == 400
+    assert "posterior a la de inicio" in exc.value.detail
+
+
+# ──────────────────────────────────────────────────────────
+# 7. RBAC & Autenticación
+# ──────────────────────────────────────────────────────────
+
+def test_events_unauthenticated_returns_401(client):
+    """Sin credenciales -> 401."""
+    response = client.get(f"{BASE_URL}/")
+    assert response.status_code == 401
+
+
+def test_events_invalid_jwt_returns_401(client):
+    """Token malformado -> 401."""
+    response = client.get(
+        f"{BASE_URL}/",
+        headers={"Authorization": "Bearer jwt-malformado"}
+    )
+    assert response.status_code == 401
+
+
+def test_events_revoked_jwt_returns_401(client):
+    """Token revocado -> 401."""
+    token = create_access_token({"sub": "4", "role": "admin_escuela"})
+    with patch.object(auth_service, "is_token_revoked", return_value=True):
+        response = client.get(
+            f"{BASE_URL}/",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+    assert response.status_code == 401
+
+
+def test_events_wrong_role_returns_403(client):
+    """Rol no autorizado (ej. doctor) -> 403 Forbidden."""
+    app.dependency_overrides[get_current_user_token] = lambda: {
+        "sub": "20",
+        "role": "doctor"
+    }
+    response = client.get(f"{BASE_URL}/")
+    assert response.status_code == 403
+    body = response.json()
+    assert body["success"] is False
+
+
+def test_events_admin_unlinked_returns_403(admin_client):
+    """Admin sin escuela vinculada -> 403 Forbidden."""
+    with patch(f"{SERVICE_MODULE}.supabase") as mock_supabase:
+        route_tables(mock_supabase, school_administrator=make_query([]))
+        response = admin_client.get(f"{BASE_URL}/")
+
+    assert response.status_code == 403
+    body = response.json()
+    assert body["success"] is False
+    assert "no está vinculado a ninguna escuela" in body["message"]
+
+
+# ──────────────────────────────────────────────────────────
+# 8. Validación de parámetros (422)
+# ──────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("invalid_url", [
+    f"{BASE_URL}/?page=0",                 # page ge=1
+    f"{BASE_URL}/?size=500",               # size le=100
+    f"{BASE_URL}/by-month?year=2015&month=5",  # year ge=2020
+    f"{BASE_URL}/by-month?year=2026&month=13", # month le=12
+    f"{BASE_URL}/abc",                     # event_id not int
+])
+def test_events_validation_errors(admin_client, invalid_url):
+    """Parámetros fuera de rango devuelven 422 con formato estándar."""
+    response = admin_client.get(invalid_url)
+    assert response.status_code == 422
+    body = response.json()
+    assert body["success"] is False
