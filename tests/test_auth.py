@@ -1,0 +1,798 @@
+"""
+Tests for Auth endpoints and service layer:
+  - POST /api/v1/auth/register-system-admin
+  - POST /api/v1/auth/register-school-admin
+  - POST /api/v1/auth/register-doctor
+  - POST /api/v1/auth/register-parent
+  - POST /api/v1/auth/login
+  - POST /api/v1/auth/logout
+
+Adheres strictly to the 5 laws of vitaly-feature-testing:
+  1. APIResponse envelope verification (success, data, message).
+  2. Multi-tenancy isolation & token claim security (NO school_id in JWT claims).
+  3. Deterministic supabase-py mock.
+  4. Inactive/deleted user rejection (403), wrong credentials (401), duplicate registration (400).
+  5. RBAC & revocation: revoked tokens rejected with 401, logout invalidation, 422 schema validation.
+"""
+try:
+    from datetime import UTC
+except ImportError:
+    from datetime import timezone
+    UTC = timezone.utc  # noqa: UP017
+from datetime import date
+from unittest.mock import MagicMock, patch
+
+import pytest
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
+from jose import jwt
+
+from app.core.config import get_settings
+from app.core.security import ALGORITHM, create_access_token, get_password_hash
+from app.main import app
+from app.schemas.user import SystemAdminRegister
+from app.services.auth_service import auth_service
+
+SERVICE_MODULE = "app.services.auth_service"
+AUTH_BASE_URL = "/api/v1/auth"
+settings = get_settings()
+
+TEST_PASSWORD = "SecurePassword123!"
+HASHED_PASSWORD = get_password_hash(TEST_PASSWORD)
+
+
+# ──────────────────────────────────────────────────────────
+# Chainable supabase-py mock helpers
+# ──────────────────────────────────────────────────────────
+
+def make_query(data=None, count=None) -> MagicMock:
+    """Chainable mock for supabase-py queries."""
+    query = MagicMock()
+    for method in (
+        "select", "eq", "neq", "in_", "is_", "ilike", "gte", "lte",
+        "order", "range", "limit", "insert", "update", "delete", "or_", "contains"
+    ):
+        getattr(query, method).return_value = query
+    query.execute.return_value = MagicMock(data=[] if data is None else data, count=count)
+    return query
+
+
+def route_tables(mock_supabase: MagicMock, **tables: MagicMock) -> None:
+    """Route supabase.table(...) calls to table-specific query mocks."""
+    mock_supabase.table.side_effect = lambda name: tables.get(name, make_query([]))
+
+
+@pytest.fixture
+def client():
+    """Client with no dependency overrides: auth gates and endpoints run normally."""
+    app.dependency_overrides.clear()
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ──────────────────────────────────────────────────────────
+# 1. POST /register-system-admin
+# ──────────────────────────────────────────────────────────
+
+class TestRegisterSystemAdmin:
+    def test_register_system_admin_success(self, client):
+        """Registro exitoso de admin_sistema retorna 200 con envelope y crea usuario inactivo."""
+        user_insert = make_query([{"id": 10}])
+        roles_query = make_query([{"id": 1}])
+        sys_admin_query = make_query([{"admin_id": 10}])
+
+        user_select = make_query([])
+        user_table = MagicMock()
+        user_table.select.return_value = user_select
+        user_table.insert.return_value = user_insert
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(
+                mock_sb,
+                user=user_table,
+                user_roles=roles_query,
+                system_administrator=sys_admin_query,
+            )
+
+            payload = {
+                "nombre": "Carlos",
+                "apellido": "Mendoza",
+                "correo": "admin.sistema@vitaly.com",
+                "contraseña": TEST_PASSWORD,
+                "fecha_de_nacimiento": "1985-04-12",
+            }
+            response = client.post(f"{AUTH_BASE_URL}/register-system-admin", json=payload)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert "Registro completado para administrador de sistema" in body["message"]
+        assert "creado exitosamente" in body["data"]
+
+        # Verify base user insert was called with is_active=False
+        user_table.insert.assert_called_once()
+        inserted_user = user_table.insert.call_args[0][0]
+        assert inserted_user["email"] == "admin.sistema@vitaly.com"
+        assert inserted_user["is_active"] is False
+        assert inserted_user["is_deleted"] is False
+
+        # Verify system_administrator insert
+        sys_admin_query.insert.assert_called_once_with({"admin_id": 10, "level_privilege": 1})
+
+    def test_register_system_admin_duplicate_email_returns_400(self, client):
+        """Intento de registro con correo existente -> 400 Bad Request."""
+        user_query = make_query([{"id": 5}])
+        roles_query = make_query([{"role": "admin_sistema"}])
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, user=user_query, user_roles=roles_query)
+
+            payload = {
+                "nombre": "Carlos",
+                "apellido": "Mendoza",
+                "correo": "existente@vitaly.com",
+                "contraseña": TEST_PASSWORD,
+                "fecha_de_nacimiento": "1985-04-12",
+            }
+            response = client.post(f"{AUTH_BASE_URL}/register-system-admin", json=payload)
+
+        assert response.status_code == 400
+        body = response.json()
+        assert body["success"] is False
+        assert "El usuario ya existe bajo el rol: admin_sistema" in body["message"]
+
+    def test_register_system_admin_invalid_schema_returns_422(self, client):
+        """Payload incompleto (sin contraseña) -> 422 Unprocessable Entity."""
+        payload = {
+            "nombre": "Carlos",
+            "apellido": "Mendoza",
+            "correo": "invalid-email",
+        }
+        response = client.post(f"{AUTH_BASE_URL}/register-system-admin", json=payload)
+        assert response.status_code == 422
+        body = response.json()
+        assert body["success"] is False
+
+
+# ──────────────────────────────────────────────────────────
+# 2. POST /register-school-admin
+# ──────────────────────────────────────────────────────────
+
+class TestRegisterSchoolAdmin:
+    def test_register_school_admin_success(self, client):
+        """Registro exitoso de admin_escuela con school_id y administrative_position."""
+        user_insert = make_query([{"id": 20}])
+        roles_query = make_query([{"id": 2}])
+        school_admin_query = make_query([{"sch_admin_id": 1}])
+
+        user_select = make_query([])
+        user_table = MagicMock()
+        user_table.select.return_value = user_select
+        user_table.insert.return_value = user_insert
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(
+                mock_sb,
+                user=user_table,
+                user_roles=roles_query,
+                school_administrator=school_admin_query,
+            )
+
+            payload = {
+                "nombre": "María",
+                "apellido": "González",
+                "correo": "admin.escuela@vitaly.com",
+                "contraseña": TEST_PASSWORD,
+                "fecha_de_nacimiento": "1988-06-20",
+                "school_id": 1,
+                "administrative_position": "Directora General",
+            }
+            response = client.post(f"{AUTH_BASE_URL}/register-school-admin", json=payload)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert "Registro completado para administrador de escuela" in body["message"]
+
+        # Verify school_administrator insert: status=2 (Inactivo/Pendiente)
+        school_admin_query.insert.assert_called_once_with({
+            "user_id": 20,
+            "school_id": 1,
+            "administrative_position": "Directora General",
+            "status": 2,
+        })
+
+    def test_register_school_admin_duplicate_email_returns_400(self, client):
+        """Intento de registro con correo existente de admin_escuela -> 400."""
+        user_query = make_query([{"id": 20}])
+        roles_query = make_query([{"role": "admin_escuela"}])
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, user=user_query, user_roles=roles_query)
+
+            payload = {
+                "nombre": "María",
+                "apellido": "González",
+                "correo": "admin.escuela@vitaly.com",
+                "contraseña": TEST_PASSWORD,
+                "fecha_de_nacimiento": "1988-06-20",
+                "school_id": 1,
+                "administrative_position": "Directora General",
+            }
+            response = client.post(f"{AUTH_BASE_URL}/register-school-admin", json=payload)
+
+        assert response.status_code == 400
+        body = response.json()
+        assert body["success"] is False
+        assert "El usuario ya existe bajo el rol: admin_escuela" in body["message"]
+
+    def test_register_school_admin_missing_school_id_returns_422(self, client):
+        """Omisión de school_id requerido -> 422 Unprocessable Entity."""
+        payload = {
+            "nombre": "María",
+            "apellido": "González",
+            "correo": "admin.escuela@vitaly.com",
+            "contraseña": TEST_PASSWORD,
+            "fecha_de_nacimiento": "1988-06-20",
+            "administrative_position": "Directora General",
+        }
+        response = client.post(f"{AUTH_BASE_URL}/register-school-admin", json=payload)
+        assert response.status_code == 422
+
+
+# ──────────────────────────────────────────────────────────
+# 3. POST /register-doctor
+# ──────────────────────────────────────────────────────────
+
+class TestRegisterDoctor:
+    def test_register_doctor_success(self, client):
+        """Registro exitoso de doctor con doc_license_number y especially."""
+        user_insert = make_query([{"id": 30}])
+        roles_query = make_query([{"id": 3}])
+        doctor_query = make_query([{"doc_id": 1}])
+
+        user_select = make_query([])
+        user_table = MagicMock()
+        user_table.select.return_value = user_select
+        user_table.insert.return_value = user_insert
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(
+                mock_sb,
+                user=user_table,
+                user_roles=roles_query,
+                doctor=doctor_query,
+            )
+
+            payload = {
+                "nombre": "Roberto",
+                "apellido": "Sánchez",
+                "correo": "doctor@vitaly.com",
+                "contraseña": TEST_PASSWORD,
+                "fecha_de_nacimiento": "1980-01-15",
+                "doc_license_number": 98765,
+                "especially": "Pediatría Integral",
+            }
+            response = client.post(f"{AUTH_BASE_URL}/register-doctor", json=payload)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert "Registro completado para doctor" in body["message"]
+
+        doctor_query.insert.assert_called_once_with({
+            "user_id": 30,
+            "doc_license_number": 98765,
+            "especially": "Pediatría Integral",
+        })
+
+    def test_register_doctor_duplicate_email_returns_400(self, client):
+        """Intento de registro con correo existente de doctor -> 400."""
+        user_query = make_query([{"id": 30}])
+        roles_query = make_query([{"role": "doctor"}])
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, user=user_query, user_roles=roles_query)
+
+            payload = {
+                "nombre": "Roberto",
+                "apellido": "Sánchez",
+                "correo": "doctor@vitaly.com",
+                "contraseña": TEST_PASSWORD,
+                "fecha_de_nacimiento": "1980-01-15",
+                "doc_license_number": 98765,
+                "especially": "Pediatría",
+            }
+            response = client.post(f"{AUTH_BASE_URL}/register-doctor", json=payload)
+
+        assert response.status_code == 400
+        body = response.json()
+        assert body["success"] is False
+        assert "El usuario ya existe bajo el rol: doctor" in body["message"]
+
+    def test_register_doctor_missing_license_returns_422(self, client):
+        """Omisión de doc_license_number -> 422."""
+        payload = {
+            "nombre": "Roberto",
+            "apellido": "Sánchez",
+            "correo": "doctor@vitaly.com",
+            "contraseña": TEST_PASSWORD,
+            "fecha_de_nacimiento": "1980-01-15",
+            "especially": "Pediatría",
+        }
+        response = client.post(f"{AUTH_BASE_URL}/register-doctor", json=payload)
+        assert response.status_code == 422
+
+
+# ──────────────────────────────────────────────────────────
+# 4. POST /register-parent
+# ──────────────────────────────────────────────────────────
+
+class TestRegisterParent:
+    def test_register_parent_success_without_linked_students(self, client):
+        """Registro de representante sin coincidencias de estudiantes."""
+        user_insert = make_query([{"id": 40}])
+        roles_query = make_query([{"id": 4}])
+        parent_query = make_query([{"id": 1}])
+
+        user_select = make_query([])
+        user_table = MagicMock()
+        user_table.select.return_value = user_select
+        user_table.insert.return_value = user_insert
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb, \
+             patch("app.services.parent_service.parent_service.link_students_by_identity", return_value={"linked_students": []}) as mock_link:
+            route_tables(
+                mock_sb,
+                user=user_table,
+                user_roles=roles_query,
+                parent=parent_query,
+            )
+
+            payload = {
+                "nombre": "Ana",
+                "apellido": "López",
+                "correo": "parent@vitaly.com",
+                "contraseña": TEST_PASSWORD,
+                "fecha_de_nacimiento": "1990-09-05",
+                "identity_number": "V-12345678",
+                "type_representative": "Madre",
+                "occupation": "Ingeniera de Sistemas",
+            }
+            response = client.post(f"{AUTH_BASE_URL}/register-parent", json=payload)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert "Registro completado para representante" in body["message"]
+        assert "Debe esperar la verificación del sistema" in body["data"]
+        mock_link.assert_called_once_with(user_id=40, identity_number="V-12345678")
+
+    def test_register_parent_success_with_auto_linked_students(self, client):
+        """Registro de representante con vinculación automática de alumnos autorizados."""
+        user_insert = make_query([{"id": 41}])
+        roles_query = make_query([{"id": 4}])
+        parent_query = make_query([{"id": 2}])
+
+        user_select = make_query([])
+        user_table = MagicMock()
+        user_table.select.return_value = user_select
+        user_table.insert.return_value = user_insert
+
+        link_result = {
+            "linked_students": [{"student_id": 1, "name": "Pedro López"}, {"student_id": 2, "name": "Lucía López"}],
+            "message": "Se vincularon 2 estudiantes",
+        }
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb, \
+             patch("app.services.parent_service.parent_service.link_students_by_identity", return_value=link_result):
+            route_tables(
+                mock_sb,
+                user=user_table,
+                user_roles=roles_query,
+                parent=parent_query,
+            )
+
+            payload = {
+                "nombre": "Ana",
+                "apellido": "López",
+                "correo": "parent.linked@vitaly.com",
+                "contraseña": TEST_PASSWORD,
+                "fecha_de_nacimiento": "1990-09-05",
+                "identity_number": "V-12345678",
+                "type_representative": "Madre",
+            }
+            response = client.post(f"{AUTH_BASE_URL}/register-parent", json=payload)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert "Se vincularon automáticamente 2 estudiante(s)" in body["data"]
+
+    def test_register_parent_duplicate_email_returns_400(self, client):
+        """Intento de registro con correo existente de representante -> 400."""
+        user_query = make_query([{"id": 40}])
+        roles_query = make_query([{"role": "representante"}])
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, user=user_query, user_roles=roles_query)
+
+            payload = {
+                "nombre": "Ana",
+                "apellido": "López",
+                "correo": "parent@vitaly.com",
+                "contraseña": TEST_PASSWORD,
+                "fecha_de_nacimiento": "1990-09-05",
+                "identity_number": "V-12345678",
+                "type_representative": "Madre",
+            }
+            response = client.post(f"{AUTH_BASE_URL}/register-parent", json=payload)
+
+        assert response.status_code == 400
+        body = response.json()
+        assert body["success"] is False
+        assert "El usuario ya existe bajo el rol: representante" in body["message"]
+
+    def test_register_parent_missing_identity_returns_422(self, client):
+        """Omisión de identity_number en el payload de representante -> 422."""
+        payload = {
+            "nombre": "Ana",
+            "apellido": "López",
+            "correo": "parent@vitaly.com",
+            "contraseña": TEST_PASSWORD,
+            "fecha_de_nacimiento": "1990-09-05",
+            "type_representative": "Madre",
+        }
+        response = client.post(f"{AUTH_BASE_URL}/register-parent", json=payload)
+        assert response.status_code == 422
+
+
+# ──────────────────────────────────────────────────────────
+# 5. POST /login - Claims estrictos y reglas de autenticación
+# ──────────────────────────────────────────────────────────
+
+class TestLogin:
+    def test_login_system_admin_success_claims_parity(self, client):
+        """Login exitoso de admin_sistema: token válido con sub, role, email y SIN school_id."""
+        user_data = {
+            "id": 100,
+            "email": "sysadmin@vitaly.com",
+            "password": HASHED_PASSWORD,
+            "name": "Carlos",
+            "lastname": "Mendoza",
+            "gender": "MASCULINO",
+            "is_active": True,
+            "is_deleted": False,
+        }
+        user_query = make_query([user_data])
+        roles_query = make_query([{"role": "admin_sistema"}])
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, user=user_query, user_roles=roles_query)
+
+            payload = {"email": "sysadmin@vitaly.com", "password": TEST_PASSWORD}
+            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["message"] == "Login exitoso"
+        token = body["data"]["access_token"]
+        assert body["data"]["token_type"] == "bearer"
+
+        # Decode token and verify claims
+        claims = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+        assert claims["sub"] == "100"
+        assert claims["email"] == "sysadmin@vitaly.com"
+        assert claims["role"] == "admin_sistema"
+        assert claims["name"] == "Carlos Mendoza"
+        assert claims["gender"] == "MASCULINO"
+        # CRITICAL TENANCY LAW: school_id MUST NOT be in JWT claims
+        assert "school_id" not in claims
+
+    def test_login_school_admin_success_includes_metadata_without_school_id(self, client):
+        """Login de admin_escuela: incluye cargo y nombre de escuela, pero NO school_id."""
+        user_data = {
+            "id": 101,
+            "email": "admin.escuela@vitaly.com",
+            "password": HASHED_PASSWORD,
+            "name": "Laura",
+            "lastname": "Pérez",
+            "gender": "FEMENINO",
+            "is_active": True,
+            "is_deleted": False,
+        }
+        user_query = make_query([user_data])
+        roles_query = make_query([{"role": "admin_escuela"}])
+        admin_query = make_query([{"administrative_position": "Directora", "school_id": 1}])
+        school_query = make_query([{"name": "Colegio San Ignacio"}])
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(
+                mock_sb,
+                user=user_query,
+                user_roles=roles_query,
+                school_administrator=admin_query,
+                school=school_query,
+            )
+
+            payload = {"email": "admin.escuela@vitaly.com", "password": TEST_PASSWORD}
+            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+
+        assert response.status_code == 200
+        body = response.json()
+        token = body["data"]["access_token"]
+        claims = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+        assert claims["role"] == "admin_escuela"
+        assert claims["administrative_position"] == "Directora"
+        assert claims["school"] == "Colegio San Ignacio"
+        assert "school_id" not in claims
+
+    def test_login_doctor_success_includes_license_and_specialty(self, client):
+        """Login de doctor: incluye especialidad y licencia profesional."""
+        user_data = {
+            "id": 102,
+            "email": "doctor@vitaly.com",
+            "password": HASHED_PASSWORD,
+            "name": "Roberto",
+            "lastname": "Sánchez",
+            "gender": "MASCULINO",
+            "is_active": True,
+            "is_deleted": False,
+        }
+        user_query = make_query([user_data])
+        roles_query = make_query([{"role": "doctor"}])
+        doc_query = make_query([{"especially": "Pediatría", "doc_license_number": 98765}])
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(
+                mock_sb,
+                user=user_query,
+                user_roles=roles_query,
+                doctor=doc_query,
+            )
+
+            payload = {"email": "doctor@vitaly.com", "password": TEST_PASSWORD}
+            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+
+        assert response.status_code == 200
+        body = response.json()
+        token = body["data"]["access_token"]
+        claims = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+        assert claims["role"] == "doctor"
+        assert claims["especially"] == "Pediatría"
+        assert claims["doc_license_number"] == 98765
+        assert "school_id" not in claims
+
+    def test_login_parent_success_includes_type_representative(self, client):
+        """Login de representante: incluye tipo de parentesco."""
+        user_data = {
+            "id": 103,
+            "email": "parent@vitaly.com",
+            "password": HASHED_PASSWORD,
+            "name": "Ana",
+            "lastname": "López",
+            "gender": "FEMENINO",
+            "is_active": True,
+            "is_deleted": False,
+        }
+        user_query = make_query([user_data])
+        roles_query = make_query([{"role": "representante"}])
+        parent_query = make_query([{"type_representative": "Madre"}])
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(
+                mock_sb,
+                user=user_query,
+                user_roles=roles_query,
+                parent=parent_query,
+            )
+
+            payload = {"email": "parent@vitaly.com", "password": TEST_PASSWORD}
+            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+
+        assert response.status_code == 200
+        body = response.json()
+        token = body["data"]["access_token"]
+        claims = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+        assert claims["role"] == "representante"
+        assert claims["type_representative"] == "Madre"
+        assert "school_id" not in claims
+
+    def test_login_inactive_user_returns_403(self, client):
+        """Usuario con is_active=False -> 403 Forbidden ('El usuario está inactivo')."""
+        user_data = {
+            "id": 104,
+            "email": "inactivo@vitaly.com",
+            "password": HASHED_PASSWORD,
+            "is_active": False,
+            "is_deleted": False,
+        }
+        user_query = make_query([user_data])
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, user=user_query)
+
+            payload = {"email": "inactivo@vitaly.com", "password": TEST_PASSWORD}
+            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+
+        assert response.status_code == 403
+        body = response.json()
+        assert body["success"] is False
+        assert "El usuario está inactivo, debe esperar verificación" in body["message"]
+
+    def test_login_deleted_user_returns_403(self, client):
+        """Usuario con is_deleted=True -> 403 Forbidden ('El usuario ha sido eliminado')."""
+        user_data = {
+            "id": 105,
+            "email": "eliminado@vitaly.com",
+            "password": HASHED_PASSWORD,
+            "is_active": True,
+            "is_deleted": True,
+        }
+        user_query = make_query([user_data])
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, user=user_query)
+
+            payload = {"email": "eliminado@vitaly.com", "password": TEST_PASSWORD}
+            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+
+        assert response.status_code == 403
+        body = response.json()
+        assert body["success"] is False
+        assert "El usuario ha sido eliminado" in body["message"]
+
+    def test_login_wrong_password_returns_401(self, client):
+        """Contraseña errónea -> 401 Unauthorized ('Credenciales incorrectas')."""
+        user_data = {
+            "id": 106,
+            "email": "user@vitaly.com",
+            "password": HASHED_PASSWORD,
+            "is_active": True,
+            "is_deleted": False,
+        }
+        user_query = make_query([user_data])
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, user=user_query)
+
+            payload = {"email": "user@vitaly.com", "password": "WrongPassword!"}
+            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+
+        assert response.status_code == 401
+        body = response.json()
+        assert body["success"] is False
+        assert "Credenciales incorrectas" in body["message"]
+
+    def test_login_nonexistent_user_returns_401(self, client):
+        """Correo no registrado en BD -> 401 Unauthorized ('Credenciales incorrectas')."""
+        user_query = make_query([])
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, user=user_query)
+
+            payload = {"email": "noexiste@vitaly.com", "password": TEST_PASSWORD}
+            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+
+        assert response.status_code == 401
+        body = response.json()
+        assert body["success"] is False
+        assert "Credenciales incorrectas" in body["message"]
+
+    def test_login_invalid_email_format_returns_422(self, client):
+        """Formato de correo no válido -> 422 Unprocessable Entity."""
+        payload = {"email": "not-an-email", "password": TEST_PASSWORD}
+        response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+        assert response.status_code == 422
+
+
+# ──────────────────────────────────────────────────────────
+# 6. POST /logout e invalidación de token
+# ──────────────────────────────────────────────────────────
+
+class TestLogoutAndRevocation:
+    def test_logout_success_and_revocation(self, client):
+        """Logout exitoso registra token en blacklist; llamada posterior con ese token retorna 401."""
+        token_data = {
+            "sub": "200",
+            "email": "user@vitaly.com",
+            "role": "admin_sistema",
+            "name": "Test User",
+            "gender": "MASCULINO",
+        }
+        valid_token = create_access_token(data=token_data)
+
+        blacklist_insert = make_query([{"id": 1}])
+        blacklist_empty = make_query([])
+        blacklist_found = make_query([{"id": 1}])
+
+        # First logout call: token is not revoked yet
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, token_blacklist=blacklist_empty)
+            blacklist_empty.insert = MagicMock(return_value=blacklist_insert)
+
+            response = client.post(
+                f"{AUTH_BASE_URL}/logout",
+                headers={"Authorization": f"Bearer {valid_token}"},
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["data"] == "Logout exitoso"
+        assert "Sesión cerrada correctamente" in body["message"]
+
+        # Subsequent call with the same token: blacklist returns record -> 401
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, token_blacklist=blacklist_found)
+
+            retry_response = client.post(
+                f"{AUTH_BASE_URL}/logout",
+                headers={"Authorization": f"Bearer {valid_token}"},
+            )
+
+        assert retry_response.status_code == 401
+        retry_body = retry_response.json()
+        assert retry_body["success"] is False
+        assert "El token ha sido revocado" in retry_body["message"]
+
+    def test_logout_unauthenticated_returns_401_or_403(self, client):
+        """Llamar a logout sin cabecera Authorization -> 401/403."""
+        response = client.post(f"{AUTH_BASE_URL}/logout")
+        assert response.status_code in (401, 403)
+
+    def test_logout_malformed_token_returns_401(self, client):
+        """Llamar a logout con token corrupto -> 401."""
+        response = client.post(
+            f"{AUTH_BASE_URL}/logout",
+            headers={"Authorization": "Bearer not-a-valid-jwt-token"},
+        )
+        assert response.status_code == 401
+        body = response.json()
+        assert body["success"] is False
+
+
+# ──────────────────────────────────────────────────────────
+# 7. Métodos del Servicio y Cobertura de Ramas Internas
+# ──────────────────────────────────────────────────────────
+
+class TestAuthServiceEdgeCases:
+    def test_create_base_user_insert_failure_raises_500(self):
+        """Fallo en supabase al insertar usuario base -> 500 Internal Server Error."""
+        user_select = make_query([])
+        user_insert_empty = make_query([])  # data is empty
+
+        user_table = MagicMock()
+        user_table.select.return_value = user_select
+        user_table.insert.return_value = user_insert_empty
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, user=user_table)
+
+            dummy_user = SystemAdminRegister(
+                nombre="Test",
+                apellido="Fail",
+                correo="fail@vitaly.com",
+                contraseña=TEST_PASSWORD,
+                fecha_de_nacimiento=date(1990, 1, 1),
+            )
+            with pytest.raises(HTTPException) as exc_info:
+                auth_service.register_system_admin(dummy_user)
+
+            assert exc_info.value.status_code == 500
+            assert "Error al crear el usuario base" in exc_info.value.detail
+
+    def test_is_token_revoked_returns_boolean(self):
+        """Verifica comportamiento de auth_service.is_token_revoked."""
+        found_query = make_query([{"id": 1}])
+        empty_query = make_query([])
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, token_blacklist=found_query)
+            assert auth_service.is_token_revoked("some-token") is True
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, token_blacklist=empty_query)
+            assert auth_service.is_token_revoked("another-token") is False
