@@ -1,0 +1,6 @@
+target-version = "py310"
+include = ["app/**/*.py", "tests/**/*.py"]
+
+[lint]
+# Start with runtime errors; broader style cleanup is tracked separately in #18.
+select = ["E9", "F63", "F7", "F82"]

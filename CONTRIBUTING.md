@@ -35,6 +35,31 @@
 
 ## 🏗️ Arquitectura y Estilo de Código
 
+### Validación local y CI
+
+Instala las herramientas de desarrollo y ejecuta los mismos controles que GitHub Actions:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m ruff check app tests
+python -m pytest -q
+```
+
+El workflow `.github/workflows/ci.yml` se ejecuta en cada pull request, al hacer
+push a `development` o `main` y manualmente desde Actions. Usa Python 3.10, caché de pip y no
+requiere secretos. Ruff comprueba inicialmente errores críticos (`E9`, `F63`,
+`F7`, `F82`); ampliar las reglas de estilo queda como trabajo separado en #18.
+
+Las pruebas ignoran el archivo `.env` y usan credenciales ficticias configuradas
+en `tests/conftest.py`. Cada test debe simular sus llamadas a Supabase e ImageKit.
+`pytest-socket` bloquea las conexiones de red; solo permite sockets Unix para el
+bucle de eventos de `TestClient`. Las futuras pruebas de integración con servicios
+reales deberán tener configuración y ejecución separadas.
+
+Para impedir merges con controles fallidos, configura un ruleset o protección de
+las ramas `development` y `main` en GitHub y exige el check **Lint and tests** después de su primera
+ejecución. El archivo del workflow por sí solo no activa esa protección.
+
 Seguimos una arquitectura de **capas** para separar responsabilidades. Por favor, mantén este orden:
 
 *   **`app/api/`**: Solo define rutas y gestiona la entrada/salida de datos. Usa `deps.py` para la lógica de autenticación y protección por roles (RBAC).
@@ -64,7 +89,12 @@ Adoptamos **Conventional Commits** para que el `CHANGELOG.md` se mantenga legibl
 - `chore:` Actualización de dependencias o tareas de mantenimiento.
 
 ### Ramas (Branches):
-- Crea ramas descriptivas: `feature/nombre-funcionalidad` o `fix/descripcion-bug`.
+- Actualiza `development` y crea la rama de trabajo desde ella usando
+  `<tipo>/GH-<n>`; por ejemplo, `ci/GH-35`. Los hotfixes parten de `main`.
+- Sigue `.agents/rules/branch-naming.md` para comprobar nombres disponibles y
+  `.agents/rules/commit-conventions.md` para los commits con gitmoji.
+- Las PR normales apuntan a `development`. Consulta `.claude/pr-config.json` y
+  `.agents/rules/pull-request.md` antes de preparar o publicar una PR.
 
 ## 📄 Documentación
 
