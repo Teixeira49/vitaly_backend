@@ -7,7 +7,7 @@ from app.core.openapi_responses import (
     BAD_REQUEST,
     PROTECTED_DETAIL_RESPONSES,
     PROTECTED_RESPONSES,
-    _error,
+    error_response,
 )
 from app.schemas.responses import APIResponse
 from app.schemas.user import UserUpdate, UserPhotoResponse
@@ -95,7 +95,7 @@ def update_my_profile(
     responses={
         **PROTECTED_RESPONSES,
         **BAD_REQUEST,
-        **_error(502, "Falló la subida del archivo a ImageKit.", "No se pudo subir la imagen al proveedor de almacenamiento."),
+        **error_response(502, "Falló la subida del archivo a ImageKit.", "No se pudo subir la imagen al proveedor de almacenamiento."),
     },
 )
 def upload_my_profile_photo(

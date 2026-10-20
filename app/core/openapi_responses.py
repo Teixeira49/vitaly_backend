@@ -16,6 +16,11 @@ Ejemplo de uso en un endpoint protegido por escuela::
 Para añadir un código puntual, combina los diccionarios::
 
     responses={**PROTECTED_RESPONSES, **BAD_REQUEST}
+
+Y para un código que no tenga constante propia, construye la entrada con
+:func:`error_response`::
+
+    responses={**PROTECTED_RESPONSES, **error_response(502, "...", "...")}
 """
 
 from typing import Any, Dict
@@ -29,7 +34,7 @@ ErrorEnvelope = APIResponse[None]
 ResponsesDict = Dict[int | str, Dict[str, Any]]
 
 
-def _error(status_code: int, description: str, message: str) -> ResponsesDict:
+def error_response(status_code: int, description: str, message: str) -> ResponsesDict:
     """Construye la entrada OpenAPI de un código de error con el envelope estándar.
 
     Args:
@@ -63,37 +68,37 @@ def _error(status_code: int, description: str, message: str) -> ResponsesDict:
 # Códigos individuales
 # ──────────────────────────────────────────────────────────
 
-BAD_REQUEST: ResponsesDict = _error(
+BAD_REQUEST: ResponsesDict = error_response(
     400,
     "Petición inválida: los datos enviados no permiten completar la operación.",
     "No se pudo procesar la solicitud con los datos proporcionados.",
 )
 
-UNAUTHORIZED: ResponsesDict = _error(
+UNAUTHORIZED: ResponsesDict = error_response(
     401,
     "Token ausente, inválido, expirado o revocado.",
     "Token inválido o expirado.",
 )
 
-FORBIDDEN_ROLE: ResponsesDict = _error(
+FORBIDDEN_ROLE: ResponsesDict = error_response(
     403,
     "El rol del usuario autenticado no tiene permiso sobre este recurso.",
     "No tienes permiso para realizar esta acción.",
 )
 
-FORBIDDEN_TENANT: ResponsesDict = _error(
+FORBIDDEN_TENANT: ResponsesDict = error_response(
     403,
     "Rol insuficiente, o el recurso pertenece a otra escuela.",
     "No tienes permiso para acceder a este recurso: pertenece a otra escuela.",
 )
 
-NOT_FOUND: ResponsesDict = _error(
+NOT_FOUND: ResponsesDict = error_response(
     404,
     "El recurso solicitado no existe.",
     "El recurso solicitado no existe.",
 )
 
-CONFLICT: ResponsesDict = _error(
+CONFLICT: ResponsesDict = error_response(
     409,
     "El recurso ya existe o su estado actual impide la operación.",
     "El recurso ya existe o está en un estado que impide la operación.",
@@ -119,7 +124,7 @@ UNPROCESSABLE: ResponsesDict = {
     }
 }
 
-INTERNAL_ERROR: ResponsesDict = _error(
+INTERNAL_ERROR: ResponsesDict = error_response(
     500,
     "Error inesperado del servidor.",
     "Ocurrió un error interno al procesar la solicitud.",
