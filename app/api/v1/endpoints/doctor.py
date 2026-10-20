@@ -1,6 +1,14 @@
+"""Endpoints del rol médico: perfil propio y foto de perfil."""
+
 from fastapi import APIRouter, Depends, UploadFile, File
 
 from app.api.deps import get_current_doctor
+from app.core.openapi_responses import (
+    BAD_REQUEST,
+    PROTECTED_DETAIL_RESPONSES,
+    PROTECTED_RESPONSES,
+    _error,
+)
 from app.schemas.responses import APIResponse
 from app.schemas.user import UserUpdate, UserPhotoResponse
 from app.services.doctor_service import doctor_service
@@ -17,7 +25,8 @@ router = APIRouter()
     "/profile",
     response_model=APIResponse[dict],
     summary="Obtener perfil del médico",
-    description="Retorna el perfil del doctor autenticado, incluyendo datos de usuario, profesionales y escuelas asignadas."
+    description="Retorna el perfil del doctor autenticado, incluyendo datos de usuario, profesionales y escuelas asignadas.",
+    responses=PROTECTED_DETAIL_RESPONSES,
 )
 def get_my_profile(
     doctor_payload: dict = Depends(get_current_doctor)
@@ -47,7 +56,8 @@ def get_my_profile(
     "/profile",
     response_model=APIResponse[dict],
     summary="Actualizar perfil del médico",
-    description="Actualiza la información personal del doctor autenticado (nombre, apellido, cédula, dirección, biografía, etc.). La foto se gestiona en /profile/photo."
+    description="Actualiza la información personal del doctor autenticado (nombre, apellido, cédula, dirección, biografía, etc.). La foto se gestiona en /profile/photo.",
+    responses={**PROTECTED_RESPONSES, **BAD_REQUEST},
 )
 def update_my_profile(
     payload: UserUpdate,
@@ -81,7 +91,12 @@ def update_my_profile(
     "/profile/photo",
     response_model=APIResponse[UserPhotoResponse],
     summary="Subir foto de perfil del médico",
-    description="Sube una imagen al bucket de ImageKit.io y actualiza photo_url en el perfil del médico autenticado."
+    description="Sube una imagen al bucket de ImageKit.io y actualiza photo_url en el perfil del médico autenticado.",
+    responses={
+        **PROTECTED_RESPONSES,
+        **BAD_REQUEST,
+        **_error(502, "Falló la subida del archivo a ImageKit.", "No se pudo subir la imagen al proveedor de almacenamiento."),
+    },
 )
 def upload_my_profile_photo(
     file: UploadFile = File(..., description="Archivo de imagen (JPEG, PNG o WebP, máx. 5MB)"),
@@ -121,7 +136,8 @@ def upload_my_profile_photo(
     "/profile/photo",
     response_model=APIResponse[UserPhotoResponse],
     summary="Eliminar foto de perfil del médico",
-    description="Elimina la foto de perfil del médico autenticado, estableciendo photo_url en null."
+    description="Elimina la foto de perfil del médico autenticado, estableciendo photo_url en null.",
+    responses={**PROTECTED_RESPONSES, **BAD_REQUEST},
 )
 def delete_my_profile_photo(
     doctor_payload: dict = Depends(get_current_doctor)

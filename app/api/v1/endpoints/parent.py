@@ -1,6 +1,9 @@
+"""Endpoints del rol representante."""
+
 from fastapi import APIRouter, Depends
 
 from app.api.deps import get_current_representante
+from app.core.openapi_responses import PROTECTED_RESPONSES
 from app.schemas.responses import APIResponse
 from app.services.parent_service import parent_service
 from app.core.database import supabase
@@ -12,18 +15,33 @@ router = APIRouter()
 # POST - Vincular estudiantes autorizados al representante
 # ──────────────────────────────────────────────────────────
 
-@router.post("/link-students", response_model=APIResponse[dict])
+@router.post(
+    "/link-students",
+    response_model=APIResponse[dict],
+    summary="Vincular estudiantes autorizados",
+    description=(
+        "Busca los estudiantes cuyo campo 'authorization_number' contiene el "
+        "documento de identidad del representante autenticado y crea la relación "
+        "en 'student_representative'. Es idempotente: las vinculaciones ya "
+        "existentes se reportan aparte en lugar de duplicarse."
+    ),
+    responses=PROTECTED_RESPONSES,
+)
 def link_authorized_students(
     parent_payload: dict = Depends(get_current_representante)
 ):
-    """
-    Busca en la tabla de estudiantes aquellos cuyo campo `authorization_number`
-    contenga el número de identidad del representante autenticado.
+    """Vincula al representante autenticado con los estudiantes que lo autorizaron.
 
-    Si encuentra coincidencias, crea automáticamente la relación en `student_representative`.
-    Evita crear relaciones duplicadas.
+    Multi-tenancy:
+        El alcance lo da el propio representante: solo se vinculan los estudiantes
+        que declaran su documento de identidad. El usuario se deriva del token
+        (parent_payload['sub']).
 
-    Requiere JWT (representante).
+    RBAC:
+        Requiere rol representante autenticado mediante Bearer token.
+
+    Raises:
+        HTTPException(404): Si el usuario no tiene un perfil de representante.
     """
     user_id = int(parent_payload["sub"])
 
