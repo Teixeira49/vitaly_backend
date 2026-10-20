@@ -1,3 +1,15 @@
+"""Servicio del rol administrador de escuela.
+
+Concentra el perfil propio, estudiantes, salones, casos médicos, métricas y
+médicos de una institución. Todos los métodos públicos reciben el ``user_id``
+autenticado y resuelven el ``school_id`` en el servidor con
+:meth:`SchoolAdminService._get_school_id_for_admin`: el cliente nunca elige su
+tenant.
+
+Es el archivo más grande del backend y está señalado para dividirse por dominio;
+mientras tanto, el código nuevo se añade siguiendo las secciones existentes.
+"""
+
 from datetime import date, timedelta
 from fastapi import HTTPException
 from app.core.database import supabase
@@ -8,6 +20,18 @@ _MONTH_LABELS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", 
 
 
 def _first_day_months_ago(ref: date, n: int) -> date:
+    """Devuelve el primer día del mes situado ``n`` meses antes de ``ref``.
+
+    Auxiliar de las series temporales de métricas: normaliza el inicio de cada
+    cubeta mensual cruzando correctamente el cambio de año.
+
+    Args:
+        ref: Fecha de referencia desde la que se cuenta hacia atrás.
+        n: Cantidad de meses a retroceder. Con 0 devuelve el día 1 del mes de ``ref``.
+
+    Returns:
+        date: Día 1 del mes resultante.
+    """
     month = ref.month - n
     year = ref.year
     while month <= 0:
@@ -17,6 +41,19 @@ def _first_day_months_ago(ref: date, n: int) -> date:
 
 
 def _linear_trend(values: list) -> list:
+    """Ajusta una recta de mínimos cuadrados a una serie y devuelve sus valores.
+
+    Se usa para dibujar la línea de tendencia junto a la serie real en los
+    gráficos de métricas.
+
+    Args:
+        values: Serie numérica ordenada cronológicamente.
+
+    Returns:
+        list: Valores de la recta ajustada, redondeados a un decimal y con la
+        misma longitud que ``values``. Lista vacía si la serie viene vacía; el
+        único valor, como float, si la serie tiene un solo punto.
+    """
     n = len(values)
     if n == 0:
         return []
@@ -33,6 +70,7 @@ def _linear_trend(values: list) -> list:
 
 
 class SchoolAdminService:
+    """Operaciones del administrador de escuela, aisladas por ``school_id``."""
 
     def _get_school_id_for_admin(self, user_id: int) -> int:
         """Obtiene el school_id vinculado al usuario admin_escuela. Lanza 403 si no está vinculado."""
@@ -65,6 +103,20 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def get_my_profile(self, user_id: int) -> dict:
+        """Devuelve el perfil del administrador junto con los datos de su escuela.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+
+        Returns:
+            dict: ``user_info`` (datos personales), ``admin_info`` (cargo y escuela)
+            y ``school_info`` (datos de la institución, con textos de reemplazo
+            cuando algún campo está vacío).
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+            HTTPException: 404 si no existe el perfil de administrador.
+        """
         admin_res = (
             supabase.table("school_administrator")
             .select("*, user(*), school(*)")
@@ -170,6 +222,28 @@ class SchoolAdminService:
         grade: int | None = None,
         section: str | None = None,
     ) -> dict:
+        """Calcula el resumen de salud de los estudiantes de la escuela.
+
+        Los filtros son jerárquicos: ``grade`` exige ``category``, y ``section``
+        exige ambos. Solo considera el año académico vigente.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            category: ID de la categoría (nivel educativo) por la que filtrar.
+            grade: Grado dentro de la categoría. Requiere ``category``.
+            section: Sección dentro del grado. Requiere ``category`` y ``grade``.
+
+        Returns:
+            dict: ``total_students``, ``overweight_students``,
+            ``malnourished_students``, ``active_cases`` y ``optimal_students``.
+            Todos en 0 si la escuela no tiene estudiantes que cumplan el filtro.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+            HTTPException: 400 si se envía ``grade`` sin ``category``, o ``section``
+                sin ``category`` y ``grade``.
+            HTTPException: 404 si no hay un año académico vigente configurado.
+        """
         school_id = self._get_school_id_for_admin(user_id)
 
         # ── Validar dependencias entre filtros ────────────────
@@ -291,6 +365,23 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def get_academic_grades(self, user_id: int, page: int, size: int) -> dict:
+        """Lista de forma paginada los grados de la escuela en el año vigente.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            page: Número de página, comenzando en 1.
+            size: Cantidad de grados por página.
+
+        Returns:
+            dict: ``data`` (grados enriquecidos), ``total``, ``page``, ``size`` y
+            ``academic_year`` con el período aplicado.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+            HTTPException: 404 si no hay un año académico vigente, o si la escuela
+                no tiene grados registrados en él. Devolver 404 ante una colección
+                vacía es comportamiento legado; se sigue en el issue #15.
+        """
         school_id = self._get_school_id_for_admin(user_id)
 
         # Buscar el año académico vigente
@@ -358,6 +449,25 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def get_students_by_classroom(self, user_id: int, classroom_id: int, page: int, size: int) -> dict:
+        """Lista de forma paginada los estudiantes inscritos en un salón.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            classroom_id: ID del salón a consultar.
+            page: Número de página, comenzando en 1.
+            size: Cantidad de estudiantes por página.
+
+        Returns:
+            dict: ``classroom`` (datos del salón), ``data`` (estudiantes),
+            ``total``, ``page`` y ``size``.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela, o
+                si el salón pertenece a otra escuela.
+            HTTPException: 404 si el salón no existe, o si no tiene estudiantes
+                registrados. Este segundo 404 es comportamiento legado; se sigue en
+                el issue #15.
+        """
         school_id = self._get_school_id_for_admin(user_id)
 
         # Verificar que el classroom pertenece a la misma escuela del admin
@@ -467,6 +577,25 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def get_student_detail(self, user_id: int, student_id: int) -> dict:
+        """Devuelve la ficha completa de un estudiante de la escuela.
+
+        La pertenencia es indirecta: el estudiante debe estar inscrito, vía
+        ``classroom_registration``, en un salón de la escuela del administrador.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            student_id: ID del estudiante a consultar.
+
+        Returns:
+            dict: ``student`` (datos personales), ``representatives`` (``None`` si
+            no tiene) y ``health_info`` (métricas y estado de salud).
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela, si
+                el estudiante no está inscrito en ningún salón, o si pertenece a
+                otra escuela.
+            HTTPException: 404 si no existe un estudiante activo con ese ID.
+        """
         school_id = self._get_school_id_for_admin(user_id)
 
         # 1. Verificar que el estudiante existe y no está eliminado
@@ -592,6 +721,24 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def get_student_metrics_history(self, user_id: int, student_id: int, limit: int) -> dict | None:
+        """Devuelve el histórico de peso y altura de un estudiante.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            student_id: ID del estudiante cuyo histórico se consulta.
+            limit: Número máximo de mediciones a devolver, de la más reciente
+                hacia atrás.
+
+        Returns:
+            dict | None: ``{"peso": [...], "altura": [...]}`` con las series
+            ordenadas, o ``None`` si el estudiante no tiene mediciones registradas.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela, si
+                el estudiante no está inscrito en ningún salón, o si pertenece a
+                otra escuela.
+            HTTPException: 404 si no existe un estudiante activo con ese ID.
+        """
         school_id = self._get_school_id_for_admin(user_id)
 
         # 1. Verificar que el estudiante existe y no está eliminado
@@ -853,6 +1000,22 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def get_medical_cases(self, user_id: int, page: int, size: int, current_year_only: bool = False) -> dict:
+        """Lista de forma paginada los casos médicos de la escuela.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            page: Número de página, comenzando en 1.
+            size: Cantidad de casos por página.
+            current_year_only: Si es True, restringe el resultado al año académico
+                vigente.
+
+        Returns:
+            dict: ``{"data": [...], "total": int, "page": int, "size": int}``. La
+            lista viene vacía si la escuela no tiene casos médicos.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+        """
         school_id = self._get_school_id_for_admin(user_id)
 
         # 1. Obtener los IDs de los estudiantes que pertenecen a esta escuela
@@ -971,6 +1134,20 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def get_doctors(self, user_id: int, page: int, size: int) -> dict:
+        """Lista de forma paginada los médicos asignados a la escuela.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            page: Número de página, comenzando en 1.
+            size: Cantidad de médicos por página.
+
+        Returns:
+            dict: ``{"data": [...], "total": int, "page": int, "size": int}``. La
+            lista viene vacía si la escuela no tiene médicos asignados.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+        """
         school_id = self._get_school_id_for_admin(user_id)
 
         # 1. Contar doctores asignados a esta escuela
@@ -1254,6 +1431,21 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def get_medical_case_detail(self, user_id: int, case_id: int) -> dict:
+        """Devuelve el detalle de un caso médico con todo su contexto.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            case_id: ID del caso médico a consultar.
+
+        Returns:
+            dict: ``case_info``, ``student_info``, ``doctor_info``,
+            ``representatives`` y ``health_context`` del estudiante afectado.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela, o
+                si el estudiante del caso pertenece a otra escuela.
+            HTTPException: 404 si no existe un caso médico activo con ese ID.
+        """
         school_id = self._get_school_id_for_admin(user_id)
 
         # 1. Obtener el caso médico principal
@@ -1312,6 +1504,24 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def get_parent_detail(self, user_id: int, parent_id: int) -> dict:
+        """Devuelve el detalle de un representante y de los hijos que tiene en la escuela.
+
+        La pertenencia es indirecta: el representante solo es visible si al menos
+        uno de sus estudiantes está inscrito en la escuela del administrador.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            parent_id: ID del representante a consultar.
+
+        Returns:
+            dict: ``representative_info``, ``total_children`` y ``children``.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela, si
+                el representante no tiene estudiantes asociados, o si ninguno de
+                ellos pertenece a la escuela del administrador.
+            HTTPException: 404 si no existe un representante activo con ese ID.
+        """
         school_id = self._get_school_id_for_admin(user_id)
 
         # 1. Obtener la información del representante
@@ -1457,6 +1667,22 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def get_student_medical_history(self, user_id: int, student_id: int, page: int, size: int) -> dict:
+        """Lista de forma paginada los casos médicos de un estudiante concreto.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            student_id: ID del estudiante cuyo historial se consulta.
+            page: Número de página, comenzando en 1.
+            size: Cantidad de casos por página.
+
+        Returns:
+            dict: ``{"data": [...], "total": int, "page": int, "size": int}``. La
+            lista viene vacía si el estudiante no tiene casos médicos.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela, o
+                si el estudiante no pertenece a su escuela.
+        """
         school_id = self._get_school_id_for_admin(user_id)
 
         # 1. Validar que el estudiante pertenezca a un classroom de esta escuela
@@ -1531,6 +1757,23 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def update_student_profile(self, user_id: int, student_id: int, payload: dict) -> dict:
+        """Actualiza los datos de un estudiante de la escuela.
+
+        Admite además reasignar el representante mediante ``representative_id``.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            student_id: ID del estudiante a actualizar.
+            payload: Campos a modificar. Los omitidos conservan su valor actual.
+
+        Returns:
+            dict: ``{"student_id": int, "updated": True}``.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela, o
+                si el estudiante no pertenece a su escuela.
+            HTTPException: 400 si el ``representative_id`` indicado no existe.
+        """
         school_id = self._get_school_id_for_admin(user_id)
         
         # 1. Validar permiso (si el estudiante está en su escuela)
@@ -1617,6 +1860,26 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def search_representatives(self, query: str, page: int, size: int) -> dict:
+        """Busca representantes por nombre y apellido, de forma paginada.
+
+        Con un solo término busca coincidencias en nombre o apellido; con varios,
+        interpreta el primero como nombre y el resto como apellido.
+
+        Nota: a diferencia del resto de métodos de este servicio, la búsqueda no
+        recibe ``user_id`` y por tanto no se filtra por escuela: recorre todos los
+        representantes del sistema. Es el comportamiento vigente, consumido por el
+        endpoint de asignación de representante a un estudiante.
+
+        Args:
+            query: Texto de búsqueda. Si viene vacío o en blanco, el resultado es
+                una lista vacía sin consultar la base de datos.
+            page: Número de página, comenzando en 1.
+            size: Cantidad de representantes por página.
+
+        Returns:
+            dict: ``{"data": [...], "total": int, "page": int, "size": int}``. La
+            lista viene vacía si no hay coincidencias.
+        """
         if not query or not query.strip():
             return {"data": [], "total": 0, "page": page, "size": size}
 
@@ -1688,6 +1951,23 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def activate_student(self, user_id: int, student_id: int) -> dict:
+        """Activa a un estudiante de la escuela, dejándolo en estado activo.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            student_id: ID del estudiante cuyo estado se desea cambiar.
+
+        Returns:
+            dict: Fila del estudiante ya actualizada, o un dict vacío si la
+            actualización no devolvió filas.
+
+        Raises:
+            HTTPException: 404 si el estudiante no existe.
+            HTTPException: 400 si se intenta activar a un estudiante eliminado.
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela, si
+                el estudiante no está inscrito en ningún salón, o si pertenece a
+                otra escuela.
+        """
         school_id = self._get_school_id_for_admin(user_id)
         
         # 1. Verificar si existe el estudiante
@@ -1734,6 +2014,23 @@ class SchoolAdminService:
         return update_res.data[0] if update_res.data else {}
 
     def deactivate_student(self, user_id: int, student_id: int) -> dict:
+        """Desactiva a un estudiante de la escuela, dejándolo en estado inactivo.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            student_id: ID del estudiante cuyo estado se desea cambiar.
+
+        Returns:
+            dict: Fila del estudiante ya actualizada, o un dict vacío si la
+            actualización no devolvió filas.
+
+        Raises:
+            HTTPException: 404 si el estudiante no existe.
+            HTTPException: 400 si se intenta modificar un estudiante eliminado.
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela, si
+                el estudiante no está inscrito en ningún salón, o si pertenece a
+                otra escuela.
+        """
         school_id = self._get_school_id_for_admin(user_id)
         
         # 1. Verificar si existe el estudiante
@@ -1784,6 +2081,20 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def get_classroom_categories_summary(self, user_id: int, category_id: int | None = None) -> dict:
+        """Resume los salones de la escuela agrupados por categoría y grado.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            category_id: Si se indica, restringe el resumen a esa categoría.
+
+        Returns:
+            dict: ``{"items": [...]}`` con una entrada por grupo. Lista vacía si la
+            escuela no tiene salones en el año vigente.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+            HTTPException: 404 si no hay un año académico vigente configurado.
+        """
         school_id = self._get_school_id_for_admin(user_id)
 
         ay_res = (
@@ -1840,6 +2151,21 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def get_available_classroom_categories(self, user_id: int) -> dict:
+        """Lista las categorías de salón que la escuela realmente usa este año.
+
+        Pensado para poblar selectores en el frontend sin ofrecer categorías vacías.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+
+        Returns:
+            dict: ``{"items": [...]}`` con las categorías en uso. Lista vacía si la
+            escuela no tiene salones en el año vigente.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+            HTTPException: 404 si no hay un año académico vigente configurado.
+        """
         school_id = self._get_school_id_for_admin(user_id)
 
         # 1. Obtener año académico vigente
@@ -1891,6 +2217,22 @@ class SchoolAdminService:
     # ──────────────────────────────────────────────────────────
 
     def get_sections_by_category_and_level(self, user_id: int, category_id: int, level: int, active: bool = False) -> dict:
+        """Lista las secciones existentes para una categoría y grado concretos.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            category_id: ID de la categoría (nivel educativo) a consultar.
+            level: Grado dentro de la categoría.
+            active: Si es True, devuelve solo las secciones con salones activos.
+
+        Returns:
+            dict: ``{"items": [...]}`` con las secciones encontradas. Lista vacía si
+            no hay ninguna que cumpla el filtro.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+            HTTPException: 404 si no hay un año académico vigente configurado.
+        """
         school_id = self._get_school_id_for_admin(user_id)
 
         query = (
@@ -1944,6 +2286,27 @@ class SchoolAdminService:
         months: int,
         weeks: int,
     ) -> dict:
+        """Calcula la tendencia de casos médicos de la escuela en el tiempo.
+
+        Agrupa los casos en cubetas semanales o mensuales, compara el período
+        actual con el inmediatamente anterior para obtener la tasa de crecimiento
+        y acompaña la serie con una recta de tendencia.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            mode: ``"weekly"`` para agrupar por semanas; cualquier otro valor
+                agrupa por meses.
+            months: Cantidad de meses a cubrir cuando ``mode`` no es ``"weekly"``.
+            weeks: Cantidad de semanas a cubrir cuando ``mode`` es ``"weekly"``.
+
+        Returns:
+            dict: ``summary`` con ``total_incidents`` y ``growth_rate``, y ``data``
+            con la serie por cubeta. Todo en cero y ``data`` vacío si la escuela no
+            tiene salones o estudiantes.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+        """
         school_id = self._get_school_id_for_admin(user_id)
 
         classrooms_res = (
@@ -2078,4 +2441,5 @@ class SchoolAdminService:
         }
 
 
+#: Instancia compartida del servicio, importada por los endpoints de escuela.
 school_admin_service = SchoolAdminService()
