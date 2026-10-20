@@ -18,6 +18,10 @@ LOGIN_ERROR_RESPONSES = {
         "description": "Forbidden: credenciales válidas pero la cuenta está eliminada, inactiva "
         "o su rol no pertenece a este portal. No se emite ningún token.",
     },
+    500: {
+        "model": APIResponse[None],
+        "description": "Internal Server Error: no se pudo completar el login. Inténtalo de nuevo más tarde.",
+    },
 }
 
 # PUBLIC_ROUTE
@@ -76,7 +80,8 @@ def login(user_in: UserLogin):
 
     Raises:
         HTTPException: 401 si las credenciales son incorrectas; 403 si la cuenta está
-            eliminada, inactiva o pertenece al portal de administración.
+            eliminada, inactiva o pertenece al portal de administración; 500 si falla
+            una operación interna del login.
     """
     token_response = auth_service.authenticate_user(user_in, TokenScope.CLIENT)
     return APIResponse(data=token_response, message="Login exitoso")
@@ -111,7 +116,8 @@ def admin_login(user_in: AdminLoginCreate):
 
     Raises:
         HTTPException: 401 si las credenciales son incorrectas; 403 si la cuenta está
-            eliminada, inactiva o pertenece al portal de clientes.
+            eliminada, inactiva o pertenece al portal de clientes; 500 si falla una
+            operación interna del login.
     """
     token_response = auth_service.authenticate_user(user_in, TokenScope.ADMIN)
     return APIResponse(data=token_response, message="Login exitoso")

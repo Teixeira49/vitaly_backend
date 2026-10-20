@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import HTTPException, status
 from app.core.database import supabase
 from app.core.security import get_password_hash, verify_password, create_access_token
@@ -5,6 +7,8 @@ from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorReg
 from app.schemas.enums import SCOPE_ROLES, TokenScope, UserRole
 import uuid
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 class AuthService:
     def _create_base_user(self, user_in, role_enum: UserRole):
@@ -130,79 +134,89 @@ class AuthService:
 
         Raises:
             HTTPException: 401 si las credenciales son incorrectas; 403 si el usuario está
-                eliminado, inactivo o su rol no pertenece al portal solicitado.
+                eliminado, inactivo o su rol no pertenece al portal solicitado; 500 si
+                falla una consulta o cualquier otra operación inesperada del login.
         """
-        user_response = supabase.table("user").select("*").eq("email", user_in.email).execute()
-        if not user_response.data:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Credenciales incorrectas"
-            )
-            
-        user = user_response.data[0]
-        
-        if user.get("is_deleted", False):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="El usuario ha sido eliminado"
-            )
-            
-        if not user.get("is_active", False):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="El usuario está inactivo, debe esperar verificación"
-            )
-            
-        if not verify_password(user_in.password, user["password"]):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Credenciales incorrectas"
-            )
-            
-        # Obtener el rol del usuario
-        role_response = supabase.table("user_roles").select("role").eq("user_id", user["id"]).execute()
-        role = role_response.data[0]["role"] if role_response.data else "desconocido"
+        try:
+            user_response = supabase.table("user").select("*").eq("email", user_in.email).execute()
+            if not user_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Credenciales incorrectas"
+                )
 
-        # Cada portal solo emite tokens para sus roles (ej. admin_sistema no entra por el de clientes)
-        if role not in {allowed.value for allowed in SCOPE_ROLES[scope]}:
-            portal = "administración" if scope == TokenScope.ADMIN else "clientes"
+            user = user_response.data[0]
+
+            if user.get("is_deleted", False):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="El usuario ha sido eliminado"
+                )
+
+            if not user.get("is_active", False):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="El usuario está inactivo, debe esperar verificación"
+                )
+
+            if not verify_password(user_in.password, user["password"]):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Credenciales incorrectas"
+                )
+
+            # Obtener el rol del usuario
+            role_response = supabase.table("user_roles").select("role").eq("user_id", user["id"]).execute()
+            role = role_response.data[0]["role"] if role_response.data else "desconocido"
+
+            # Cada portal solo emite tokens para sus roles (ej. admin_sistema no entra por el de clientes)
+            if role not in {allowed.value for allowed in SCOPE_ROLES[scope]}:
+                portal = "administración" if scope == TokenScope.ADMIN else "clientes"
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Esta cuenta no tiene acceso al portal de {portal}. Inicia sesión desde el portal correspondiente."
+                )
+
+            # Generar token
+            token_data = {
+                "sub": str(user["id"]),
+                "email": str(user["email"]),
+                "role": role,
+                "scope": scope.value,
+                "name": f"{user.get('name', '')} {user.get('lastname', '')}".strip(),
+                "gender": user.get("gender") if user.get("gender") is not None else ""
+            }
+
+            if role == UserRole.DOCTOR.value:
+                doctor_res = supabase.table("doctor").select("especially, doc_license_number").eq("user_id", user["id"]).execute()
+                if doctor_res.data:
+                    token_data["especially"] = doctor_res.data[0].get("especially")
+                    token_data["doc_license_number"] = doctor_res.data[0].get("doc_license_number")
+            elif role == UserRole.ADMIN_ESCUELA.value:
+                admin_res = supabase.table("school_administrator").select("administrative_position, school_id").eq("user_id", user["id"]).execute()
+                if admin_res.data:
+                    token_data["administrative_position"] = admin_res.data[0].get("administrative_position")
+                    school_id = admin_res.data[0].get("school_id")
+                    if school_id:
+                        school_res = supabase.table("school").select("name").eq("sch_id", school_id).execute()
+                        if school_res.data:
+                            token_data["school"] = school_res.data[0].get("name")
+            elif role == UserRole.REPRESENTANTE.value:
+                parent_res = supabase.table("parent").select("type_representative").eq("user_id", user["id"]).execute()
+                if parent_res.data:
+                    token_data["type_representative"] = parent_res.data[0].get("type_representative")
+
+            access_token = create_access_token(data=token_data)
+
+            return Token(access_token=access_token, token_type="bearer")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Error inesperado durante la autenticación")
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Esta cuenta no tiene acceso al portal de {portal}. Inicia sesión desde el portal correspondiente."
-            )
-
-        # Generar token
-        token_data = {
-            "sub": str(user["id"]),
-            "email": str(user["email"]),
-            "role": role,
-            "scope": scope.value,
-            "name": f"{user.get('name', '')} {user.get('lastname', '')}".strip(),
-            "gender": user.get("gender") if user.get("gender") is not None else ""
-        }
-
-        if role == UserRole.DOCTOR.value:
-            doctor_res = supabase.table("doctor").select("especially, doc_license_number").eq("user_id", user["id"]).execute()
-            if doctor_res.data:
-                token_data["especially"] = doctor_res.data[0].get("especially")
-                token_data["doc_license_number"] = doctor_res.data[0].get("doc_license_number")
-        elif role == UserRole.ADMIN_ESCUELA.value:
-            admin_res = supabase.table("school_administrator").select("administrative_position, school_id").eq("user_id", user["id"]).execute()
-            if admin_res.data:
-                token_data["administrative_position"] = admin_res.data[0].get("administrative_position")
-                school_id = admin_res.data[0].get("school_id")
-                if school_id:
-                    school_res = supabase.table("school").select("name").eq("sch_id", school_id).execute()
-                    if school_res.data:
-                        token_data["school"] = school_res.data[0].get("name")
-        elif role == UserRole.REPRESENTANTE.value:
-            parent_res = supabase.table("parent").select("type_representative").eq("user_id", user["id"]).execute()
-            if parent_res.data:
-                token_data["type_representative"] = parent_res.data[0].get("type_representative")
-
-        access_token = create_access_token(data=token_data)
-        
-        return Token(access_token=access_token, token_type="bearer")
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No se pudo iniciar sesión. Inténtalo de nuevo más tarde.",
+            ) from exc
 
     def revoke_token(self, token: str, expires_at: int):
         """

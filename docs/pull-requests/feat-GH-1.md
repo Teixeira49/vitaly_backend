@@ -31,6 +31,10 @@ no se rompe.
    `vitaly-feature-testing` reflejan los nuevos gates y el claim `scope`.
 7. **Ruta del frontend.** `AGENTS.md`/`CLAUDE.md`, `cross-repo-e2e.md` y las skills apuntan a
    `../vitaly_frontend/vitaly-care-for-families` (commit 📝 separado).
+8. **Errores inesperados del login.** Ambos portales devuelven `APIResponse` con estado 500
+   y mensaje genérico si falla una consulta o la firma del JWT. El servicio registra el
+   error con un mensaje fijo, sin añadir credenciales ni tokens al log. Las respuestas
+   401/403 mantienen su estado y mensaje. OpenAPI documenta también el error 500.
 
 ⚠️ **Al desplegar, todos los usuarios deberán iniciar sesión de nuevo:** los tokens emitidos
 antes del cambio no llevan `scope` y reciben 401 (el frontend ya redirige a `/login` ante un
@@ -50,7 +54,7 @@ Closes #1
 ## Tipo de cambio
 
 - [x] ✨ Nueva funcionalidad (cambio no-breaking que agrega funcionalidad)
-- [ ] 🛠️ Corrección de errores (cambio no-breaking que arregla un error)
+- [x] 🛠️ Corrección de errores (cambio no-breaking que arregla un error)
 - [x] ❌ Cambio importante (arreglo o característica que haría que la funcionalidad existente no funcionara como se esperaba)
 - [x] 📝 Actualización de la documentación
 - [ ] 🧹 Code refactoring (modificación de la estructura interna del código sin modificar las APIs)
@@ -59,8 +63,10 @@ Closes #1
 
 ## ¿Cómo se ha probado esto?
 
-Pruebas automatizadas: `python -m pytest -q` → 291 pasan (19 nuevas en `tests/test_auth.py`);
-`python -m ruff check app tests` sin errores.
+Pruebas automatizadas: `python -m pytest -q` → 301 pasan (29 nuevas en `tests/test_auth.py`);
+`python -m ruff check app tests` sin errores. Las 10 regresiones nuevas cubren fallos de
+Supabase en todas las etapas del login y errores al firmar el JWT, en ambos portales;
+comprueban el envelope 500 genérico y que no se emita token cuando falla una consulta.
 
 Prueba manual en Swagger (`/docs`):
 

@@ -28,6 +28,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from jose import jwt
+from postgrest.exceptions import APIError
 
 from app.api.deps import get_current_admin, get_current_client
 from app.core.config import get_settings
@@ -791,6 +792,91 @@ class TestLoginPortalSeparation:
         )
         assert response.status_code == 422
         assert response.json()["success"] is False
+
+
+class TestLoginUnexpectedErrors:
+    @pytest.mark.parametrize(
+        ("login_path", "role", "failed_table"),
+        [
+            ("/login", "representante", "user"),
+            ("/login", "representante", "user_roles"),
+            ("/admin/login", "admin_sistema", "user"),
+            ("/admin/login", "admin_sistema", "user_roles"),
+            ("/login", "doctor", "doctor"),
+            ("/login", "representante", "parent"),
+            ("/login", "admin_escuela", "school_administrator"),
+            ("/login", "admin_escuela", "school"),
+        ],
+    )
+    def test_database_error_returns_500_envelope(
+        self, client, caplog, login_path, role, failed_table
+    ):
+        """Una consulta fallida en cualquier etapa devuelve JSON 500 sin emitir JWT."""
+        tables = {
+            "user": make_query([active_user()]),
+            "user_roles": make_query([{"role": role}]),
+            "doctor": make_query([]),
+            "parent": make_query([]),
+            "school_administrator": make_query([{"school_id": 1}]),
+            "school": make_query([]),
+        }
+        tables[failed_table].execute.side_effect = APIError({
+            "message": "simulated database failure",
+            "code": "XX000",
+            "details": "internal database diagnostic",
+            "hint": None,
+        })
+
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb, \
+             patch(f"{SERVICE_MODULE}.create_access_token") as mock_token:
+            route_tables(mock_sb, **tables)
+            response = client.post(
+                f"{AUTH_BASE_URL}{login_path}",
+                json={"email": "cuenta@vitaly.com", "password": TEST_PASSWORD},
+            )
+
+        assert response.status_code == 500
+        assert response.headers["content-type"].startswith("application/json")
+        assert response.json() == {
+            "success": False,
+            "message": "No se pudo iniciar sesión. Inténtalo de nuevo más tarde.",
+            "data": None,
+            "errors": None,
+            "meta": None,
+        }
+        mock_token.assert_not_called()
+        assert any(
+            record.name == SERVICE_MODULE and record.exc_info is not None
+            for record in caplog.records
+        )
+
+    @pytest.mark.parametrize(
+        ("login_path", "role"),
+        [("/login", "representante"), ("/admin/login", "admin_sistema")],
+    )
+    def test_token_generation_error_returns_500_envelope(self, client, login_path, role):
+        """Un error al firmar el JWT tampoco expone detalles internos al cliente."""
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb, \
+             patch(
+                 f"{SERVICE_MODULE}.create_access_token",
+                 side_effect=RuntimeError("internal signing diagnostic"),
+             ):
+            route_tables(
+                mock_sb,
+                user=make_query([active_user()]),
+                user_roles=make_query([{"role": role}]),
+            )
+            response = client.post(
+                f"{AUTH_BASE_URL}{login_path}",
+                json={"email": "cuenta@vitaly.com", "password": TEST_PASSWORD},
+            )
+
+        assert response.status_code == 500
+        body = response.json()
+        assert body["success"] is False
+        assert body["message"] == "No se pudo iniciar sesión. Inténtalo de nuevo más tarde."
+        assert body["data"] is None
+        assert body["errors"] is None
 
 
 # ──────────────────────────────────────────────────────────
