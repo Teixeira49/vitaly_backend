@@ -45,6 +45,7 @@ def admin_payload(user_id: int = 4) -> dict:
         "sub": str(user_id),
         "email": "admin@colegio.test",
         "role": "admin_escuela",
+        "scope": "client",
         "name": "Laura Pérez",
         "gender": "FEMENINO",
         "administrative_position": "Directora",
@@ -617,7 +618,8 @@ def test_medical_wrong_role_returns_403(client):
     """Rol no autorizado (ej. representante o doctor) -> 403 Forbidden."""
     app.dependency_overrides[get_current_user_token] = lambda: {
         "sub": "20",
-        "role": "representante"
+        "role": "representante",
+        "scope": "client"
     }
     response = client.get(f"{BASE_URL}/doctors")
     assert response.status_code == 403

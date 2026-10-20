@@ -46,6 +46,7 @@ def sys_admin_payload(user_id: int = 1) -> dict:
         "sub": str(user_id),
         "email": "sysadmin@vitaly.com",
         "role": "admin_sistema",
+        "scope": "admin",
         "name": "Super Admin",
         "gender": "MASCULINO",
     }
@@ -56,6 +57,7 @@ def admin_school_payload(user_id: int = 2) -> dict:
         "sub": str(user_id),
         "email": "admin.escuela@vitaly.com",
         "role": "admin_escuela",
+        "scope": "client",
         "name": "Directora",
         "gender": "FEMENINO",
     }
@@ -66,6 +68,7 @@ def doctor_payload(user_id: int = 3) -> dict:
         "sub": str(user_id),
         "email": "doctor@vitaly.com",
         "role": "doctor",
+        "scope": "client",
         "name": "Doctor",
         "gender": "MASCULINO",
     }
@@ -628,7 +631,7 @@ class TestAdminSchoolRBAC:
         assert response.status_code == 403
         body = response.json()
         assert body["success"] is False
-        assert "Se requiere rol de admin_sistema" in body["message"]
+        assert "token emitido por el portal de administración" in body["message"]
 
     def test_schools_forbidden_for_doctor(self, client):
         """Rol doctor intentando acceder a admin/schools -> 403 Forbidden."""
@@ -641,4 +644,4 @@ class TestAdminSchoolRBAC:
         assert response.status_code == 403
         body = response.json()
         assert body["success"] is False
-        assert "Se requiere rol de admin_sistema" in body["message"]
+        assert "token emitido por el portal de administración" in body["message"]

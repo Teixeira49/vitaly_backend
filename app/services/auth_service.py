@@ -1,8 +1,8 @@
 from fastapi import HTTPException, status
 from app.core.database import supabase
 from app.core.security import get_password_hash, verify_password, create_access_token
-from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, ParentRegister, UserLogin, Token
-from app.schemas.enums import UserRole
+from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, ParentRegister, LoginBase, Token
+from app.schemas.enums import SCOPE_ROLES, TokenScope, UserRole
 import uuid
 from datetime import datetime
 
@@ -114,7 +114,24 @@ class AuthService:
         
         return msg
         
-    def authenticate_user(self, user_in: UserLogin):
+    def authenticate_user(self, user_in: LoginBase, scope: TokenScope) -> Token:
+        """Valida las credenciales y emite un JWT para el portal de login indicado.
+
+        El rol del usuario debe pertenecer al portal (`SCOPE_ROLES[scope]`); si no, se
+        rechaza antes de emitir el token. El token incluye el claim `scope` para que los
+        gates de `app/api/deps.py` verifiquen su procedencia.
+
+        Args:
+            user_in: Credenciales (correo y contraseña) recibidas en el login.
+            scope: Portal por el que se autentica (`TokenScope.ADMIN` o `TokenScope.CLIENT`).
+
+        Returns:
+            Token: JWT de acceso con los claims del usuario y su `scope`.
+
+        Raises:
+            HTTPException: 401 si las credenciales son incorrectas; 403 si el usuario está
+                eliminado, inactivo o su rol no pertenece al portal solicitado.
+        """
         user_response = supabase.table("user").select("*").eq("email", user_in.email).execute()
         if not user_response.data:
             raise HTTPException(
@@ -145,12 +162,21 @@ class AuthService:
         # Obtener el rol del usuario
         role_response = supabase.table("user_roles").select("role").eq("user_id", user["id"]).execute()
         role = role_response.data[0]["role"] if role_response.data else "desconocido"
-        
+
+        # Cada portal solo emite tokens para sus roles (ej. admin_sistema no entra por el de clientes)
+        if role not in {allowed.value for allowed in SCOPE_ROLES[scope]}:
+            portal = "administración" if scope == TokenScope.ADMIN else "clientes"
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Esta cuenta no tiene acceso al portal de {portal}. Inicia sesión desde el portal correspondiente."
+            )
+
         # Generar token
         token_data = {
             "sub": str(user["id"]),
             "email": str(user["email"]),
             "role": role,
+            "scope": scope.value,
             "name": f"{user.get('name', '')} {user.get('lastname', '')}".strip(),
             "gender": user.get("gender") if user.get("gender") is not None else ""
         }

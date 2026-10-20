@@ -42,6 +42,7 @@ def admin_payload(user_id: int = 4) -> dict:
         "sub": str(user_id),
         "email": "admin@colegio.test",
         "role": "admin_escuela",
+        "scope": "client",
         "name": "Laura Pérez",
         "gender": "FEMENINO",
         "administrative_position": "Directora",
@@ -650,7 +651,7 @@ def test_students_invalid_jwt_returns_401(client):
 
 def test_students_revoked_jwt_returns_401(client):
     """Token revocado -> 401."""
-    token = create_access_token({"sub": "4", "role": "admin_escuela"})
+    token = create_access_token({"sub": "4", "role": "admin_escuela", "scope": "client"})
     with patch.object(auth_service, "is_token_revoked", return_value=True):
         response = client.get(
             f"{BASE_URL}/students/10",
@@ -663,7 +664,8 @@ def test_students_wrong_role_returns_403(client):
     """Rol no autorizado (ej. doctor) -> 403 Forbidden."""
     app.dependency_overrides[get_current_user_token] = lambda: {
         "sub": "20",
-        "role": "doctor"
+        "role": "doctor",
+        "scope": "client"
     }
     response = client.get(f"{BASE_URL}/students/10")
     assert response.status_code == 403

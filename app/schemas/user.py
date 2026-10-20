@@ -3,9 +3,19 @@ from datetime import date
 from app.schemas.enums import UserRole
 from typing import Optional
 
-class UserLogin(BaseModel):
-    email: EmailStr
-    password: str
+class LoginBase(BaseModel):
+    email: EmailStr = Field(..., description="Correo electrónico registrado de la cuenta")
+    password: str = Field(..., description="Contraseña en texto plano de la cuenta")
+
+class UserLogin(LoginBase):
+    """Credenciales del portal de clientes (`POST /auth/login`): admin_escuela, doctor y representante."""
+
+class AdminLoginCreate(LoginBase):
+    """Credenciales del portal de administración (`POST /auth/admin/login`): solo admin_sistema.
+
+    Esquema separado de `UserLogin` para poder exigir en el futuro campos exclusivos del
+    portal de administración (ej. un segundo factor) sin afectar al de clientes.
+    """
 
 class SystemAdminRegister(BaseModel):
     nombre: str

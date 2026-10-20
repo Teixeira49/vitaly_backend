@@ -16,14 +16,20 @@ or type checker catches that. This skill prevents it.
 | Dependency                   | Allows                    | Returns           |
 | ---------------------------- | ------------------------- | ----------------- |
 | `get_current_user_token`     | any valid, non-revoked JWT | decoded payload `dict` |
-| `get_current_admin_sistema`  | `UserRole.ADMIN_SISTEMA`  | payload `dict`    |
-| `get_current_admin_escuela`  | `UserRole.ADMIN_ESCUELA`  | payload `dict`    |
-| `get_current_doctor`         | `UserRole.DOCTOR`         | payload `dict`    |
-| `get_current_representante`  | `UserRole.REPRESENTANTE`  | payload `dict`    |
+| `get_current_admin`          | `scope=admin` token (admin portal: `ADMIN_SISTEMA`) | payload `dict` |
+| `get_current_client`         | `scope=client` token (client portal: `ADMIN_ESCUELA`, `DOCTOR`, `REPRESENTANTE`) | payload `dict` |
+| `get_current_admin_sistema`  | `UserRole.ADMIN_SISTEMA` (on `get_current_admin`)  | payload `dict`    |
+| `get_current_admin_escuela`  | `UserRole.ADMIN_ESCUELA` (on `get_current_client`) | payload `dict`    |
+| `get_current_doctor`         | `UserRole.DOCTOR` (on `get_current_client`)        | payload `dict`    |
+| `get_current_representante`  | `UserRole.REPRESENTANTE` (on `get_current_client`) | payload `dict`    |
 
-Every role gate depends on `get_current_user_token`, which decodes the HS256 JWT, rejects
-revoked tokens (logout) with 401, and the role gate raises 403. Payload claims: `sub` (user id
-as string), `role`, `email`, `name`, plus role extras (`school` name for admin_escuela,
+Chain: `get_current_user_token` decodes the HS256 JWT and rejects revoked tokens (logout) with
+401; the scope gate (`get_current_admin` / `get_current_client`) rejects a token without
+`scope` with 401 (issued before the portal split: forces a fresh login) and a token from the
+other portal with 403; the role gate raises 403. Each login portal stamps `scope`:
+`POST /auth/admin/login` → `admin`, `POST /auth/login` → `client` (`TokenScope` and
+`SCOPE_ROLES` in `app/schemas/enums.py`). Payload claims: `sub` (user id as string), `role`,
+`scope`, `email`, `name`, plus role extras (`school` name for admin_escuela,
 `especially` for doctor, `type_representative` for representante). There is **no**
 `school_id` claim — see `vitaly-tenant-isolation`.
 
@@ -63,9 +69,9 @@ Inline role checks scatter authorization across handlers; adding a role then bec
 
 Mark every intentionally public handler with a `# PUBLIC_ROUTE` comment exactly above the
 function definition, i.e. above its decorator stack (as in the rule's example). Legitimately
-public today: `/auth/register-*`, `/auth/login`, `/catalogs/*`, `GET /schools`, `/`, `/health`
-and `GET /health-visual` (`app/main.py:72`). Of these, `/`, `/health`, `/health-visual`,
-`auth.py` register/login and `school.py` have no marker at all (`catalogs.py` has it in the
+public today: `/auth/register-*`, `/auth/login`, `/auth/admin/login`, `/catalogs/*`, `GET /schools`, `/`, `/health`
+and `GET /health-visual` (`app/main.py:72`). Of these, `/`, `/health`, `/health-visual`
+and `school.py` have no marker at all (`catalogs.py` has it in the
 docstring): mark them before the guard test can go green.
 
 ## Ownership checks (role is not enough)
@@ -127,7 +133,8 @@ def test_every_route_is_gated_or_public():
 Pair it with negative tests per gate: wrong role → 403, missing/revoked token → 401. Missing
 token → 401 is guaranteed by the pinned `fastapi[standard]>=0.122.0` (`requirements.txt`):
 security classes such as `HTTPBearer()` in `deps.py` return 401 since 0.122.0. Override
-gates with `app.dependency_overrides[get_current_doctor] = lambda: {"sub": "1", "role": "doctor"}`.
+gates with `app.dependency_overrides[get_current_doctor] = lambda: {"sub": "1", "role": "doctor", "scope": "client"}`
+(real tokens and `get_current_user_token` overrides must carry `scope`, or the scope gate answers 401).
 
 ## Legacy notes
 

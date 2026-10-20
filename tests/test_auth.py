@@ -4,8 +4,10 @@ Tests for Auth endpoints and service layer:
   - POST /api/v1/auth/register-school-admin
   - POST /api/v1/auth/register-doctor
   - POST /api/v1/auth/register-parent
-  - POST /api/v1/auth/login
+  - POST /api/v1/auth/login        (portal de clientes, scope=client)
+  - POST /api/v1/auth/admin/login  (portal de administración, scope=admin)
   - POST /api/v1/auth/logout
+  - Gates de procedencia get_current_admin / get_current_client (claim `scope`)
 
 Adheres strictly to the 5 laws of vitaly-feature-testing:
   1. APIResponse envelope verification (success, data, message).
@@ -27,6 +29,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from jose import jwt
 
+from app.api.deps import get_current_admin, get_current_client
 from app.core.config import get_settings
 from app.core.security import ALGORITHM, create_access_token, get_password_hash
 from app.main import app
@@ -453,8 +456,8 @@ class TestRegisterParent:
 # ──────────────────────────────────────────────────────────
 
 class TestLogin:
-    def test_login_system_admin_success_claims_parity(self, client):
-        """Login exitoso de admin_sistema: token válido con sub, role, email y SIN school_id."""
+    def test_admin_login_system_admin_success_claims_parity(self, client):
+        """Login de admin_sistema por el portal de administración: scope=admin, sub, role, email y SIN school_id."""
         user_data = {
             "id": 100,
             "email": "sysadmin@vitaly.com",
@@ -472,7 +475,7 @@ class TestLogin:
             route_tables(mock_sb, user=user_query, user_roles=roles_query)
 
             payload = {"email": "sysadmin@vitaly.com", "password": TEST_PASSWORD}
-            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+            response = client.post(f"{AUTH_BASE_URL}/admin/login", json=payload)
 
         assert response.status_code == 200
         body = response.json()
@@ -486,6 +489,7 @@ class TestLogin:
         assert claims["sub"] == "100"
         assert claims["email"] == "sysadmin@vitaly.com"
         assert claims["role"] == "admin_sistema"
+        assert claims["scope"] == "admin"
         assert claims["name"] == "Carlos Mendoza"
         assert claims["gender"] == "MASCULINO"
         # CRITICAL TENANCY LAW: school_id MUST NOT be in JWT claims
@@ -525,6 +529,7 @@ class TestLogin:
         token = body["data"]["access_token"]
         claims = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
         assert claims["role"] == "admin_escuela"
+        assert claims["scope"] == "client"
         assert claims["administrative_position"] == "Directora"
         assert claims["school"] == "Colegio San Ignacio"
         assert "school_id" not in claims
@@ -561,6 +566,7 @@ class TestLogin:
         token = body["data"]["access_token"]
         claims = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
         assert claims["role"] == "doctor"
+        assert claims["scope"] == "client"
         assert claims["especially"] == "Pediatría"
         assert claims["doc_license_number"] == 98765
         assert "school_id" not in claims
@@ -597,6 +603,7 @@ class TestLogin:
         token = body["data"]["access_token"]
         claims = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
         assert claims["role"] == "representante"
+        assert claims["scope"] == "client"
         assert claims["type_representative"] == "Madre"
         assert "school_id" not in claims
 
@@ -689,6 +696,173 @@ class TestLogin:
 
 
 # ──────────────────────────────────────────────────────────
+# 5.1 Separación de portales: rechazo antes de emitir el JWT
+# ──────────────────────────────────────────────────────────
+
+def active_user(user_id: int = 110) -> dict:
+    return {
+        "id": user_id,
+        "email": "cuenta@vitaly.com",
+        "password": HASHED_PASSWORD,
+        "name": "Cuenta",
+        "lastname": "Prueba",
+        "is_active": True,
+        "is_deleted": False,
+    }
+
+
+class TestLoginPortalSeparation:
+    def test_client_login_rejects_system_admin_with_403(self, client):
+        """admin_sistema en el portal de clientes -> 403 y ningún token emitido."""
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb, \
+             patch(f"{SERVICE_MODULE}.create_access_token") as mock_token:
+            route_tables(
+                mock_sb,
+                user=make_query([active_user()]),
+                user_roles=make_query([{"role": "admin_sistema"}]),
+            )
+            response = client.post(
+                f"{AUTH_BASE_URL}/login",
+                json={"email": "cuenta@vitaly.com", "password": TEST_PASSWORD},
+            )
+
+        assert response.status_code == 403
+        body = response.json()
+        assert body["success"] is False
+        assert body["data"] is None
+        assert "portal de clientes" in body["message"]
+        mock_token.assert_not_called()
+
+    @pytest.mark.parametrize("role", ["admin_escuela", "doctor", "representante"])
+    def test_admin_login_rejects_client_roles_with_403(self, client, role):
+        """Roles del portal de clientes en el portal de administración -> 403 y ningún token emitido."""
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb, \
+             patch(f"{SERVICE_MODULE}.create_access_token") as mock_token:
+            route_tables(
+                mock_sb,
+                user=make_query([active_user()]),
+                user_roles=make_query([{"role": role}]),
+            )
+            response = client.post(
+                f"{AUTH_BASE_URL}/admin/login",
+                json={"email": "cuenta@vitaly.com", "password": TEST_PASSWORD},
+            )
+
+        assert response.status_code == 403
+        body = response.json()
+        assert body["success"] is False
+        assert body["data"] is None
+        assert "portal de administración" in body["message"]
+        mock_token.assert_not_called()
+
+    def test_client_login_rejects_user_without_role_with_403(self, client):
+        """Usuario sin fila en user_roles -> 403 (antes se emitía un token con role 'desconocido')."""
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(mock_sb, user=make_query([active_user()]), user_roles=make_query([]))
+            response = client.post(
+                f"{AUTH_BASE_URL}/login",
+                json={"email": "cuenta@vitaly.com", "password": TEST_PASSWORD},
+            )
+
+        assert response.status_code == 403
+        assert response.json()["success"] is False
+
+    def test_admin_login_wrong_password_returns_401(self, client):
+        """Contraseña errónea en el portal de administración -> 401 sin revelar el rol."""
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(
+                mock_sb,
+                user=make_query([active_user()]),
+                user_roles=make_query([{"role": "representante"}]),
+            )
+            response = client.post(
+                f"{AUTH_BASE_URL}/admin/login",
+                json={"email": "cuenta@vitaly.com", "password": "WrongPassword!"},
+            )
+
+        assert response.status_code == 401
+        assert "Credenciales incorrectas" in response.json()["message"]
+
+    def test_admin_login_invalid_email_format_returns_422(self, client):
+        """Formato de correo no válido en el portal de administración -> 422."""
+        response = client.post(
+            f"{AUTH_BASE_URL}/admin/login",
+            json={"email": "not-an-email", "password": TEST_PASSWORD},
+        )
+        assert response.status_code == 422
+        assert response.json()["success"] is False
+
+
+# ──────────────────────────────────────────────────────────
+# 5.2 Gates de procedencia del token (claim `scope`)
+# ──────────────────────────────────────────────────────────
+
+class TestScopeGates:
+    def test_get_current_admin_accepts_admin_scope(self):
+        payload = {"sub": "1", "role": "admin_sistema", "scope": "admin"}
+        assert get_current_admin(payload) == payload
+
+    @pytest.mark.parametrize("role", ["admin_escuela", "doctor", "representante"])
+    def test_get_current_client_accepts_client_roles(self, role):
+        payload = {"sub": "1", "role": role, "scope": "client"}
+        assert get_current_client(payload) == payload
+
+    @pytest.mark.parametrize("gate", [get_current_admin, get_current_client])
+    def test_token_without_scope_returns_401(self, gate):
+        """Token emitido antes de la separación de portales -> 401 para forzar un nuevo login."""
+        with pytest.raises(HTTPException) as exc_info:
+            gate({"sub": "1", "role": "admin_sistema"})
+        assert exc_info.value.status_code == 401
+
+    def test_client_scope_token_rejected_by_admin_gate(self):
+        with pytest.raises(HTTPException) as exc_info:
+            get_current_admin({"sub": "1", "role": "representante", "scope": "client"})
+        assert exc_info.value.status_code == 403
+
+    def test_admin_scope_token_rejected_by_client_gate(self):
+        with pytest.raises(HTTPException) as exc_info:
+            get_current_client({"sub": "1", "role": "admin_sistema", "scope": "admin"})
+        assert exc_info.value.status_code == 403
+
+    @pytest.mark.parametrize(
+        ("gate", "payload"),
+        [
+            # scope y rol incoherentes (token manipulado o de otro portal): nunca se aceptan
+            (get_current_admin, {"sub": "1", "role": "representante", "scope": "admin"}),
+            (get_current_client, {"sub": "1", "role": "admin_sistema", "scope": "client"}),
+        ],
+    )
+    def test_scope_role_mismatch_returns_403(self, gate, payload):
+        with pytest.raises(HTTPException) as exc_info:
+            gate(payload)
+        assert exc_info.value.status_code == 403
+
+    def test_admin_route_rejects_legacy_token_without_scope_with_401(self, client):
+        """Ruta de admin_sistema con un token real sin `scope` -> 401 con envelope."""
+        token = create_access_token(data={"sub": "1", "role": "admin_sistema"})
+        with patch.object(auth_service, "is_token_revoked", return_value=False):
+            response = client.get(
+                "/api/v1/admin/users",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert response.status_code == 401
+        body = response.json()
+        assert body["success"] is False
+        assert "inicia sesión de nuevo" in body["message"]
+
+    def test_client_route_rejects_admin_scope_token_with_403(self, client):
+        """Ruta de representante con un token del portal de administración -> 403 con envelope."""
+        token = create_access_token(data={"sub": "1", "role": "admin_sistema", "scope": "admin"})
+        with patch.object(auth_service, "is_token_revoked", return_value=False):
+            response = client.post(
+                "/api/v1/parent/link-students",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert response.status_code == 403
+        assert response.json()["success"] is False
+
+
+# ──────────────────────────────────────────────────────────
 # 6. POST /logout e invalidación de token
 # ──────────────────────────────────────────────────────────
 
@@ -699,6 +873,7 @@ class TestLogoutAndRevocation:
             "sub": "200",
             "email": "user@vitaly.com",
             "role": "admin_sistema",
+            "scope": "admin",
             "name": "Test User",
             "gender": "MASCULINO",
         }
