@@ -10,7 +10,7 @@ alwaysApply: false
 
 ## 1. Scope & Context
 - **Target Area:** Endpoints (`app/api/`), esquemas Pydantic (`app/schemas/`) y tareas completas End-to-End.
-- **Repositorio Hermano:** El frontend reside en la ruta relativa `../vitaly-care-for-families` (Vite + React + TypeScript + TanStack Query).
+- **Repositorio Hermano:** El frontend reside en la ruta relativa `../vitaly_frontend/vitaly-care-for-families` (Vite + React + TypeScript + TanStack Query).
 - **Roles:** Backend Architect, Security Sentinel.
 - **Objetivo:** Permitir la implementación coordinada de funcionalidades completas (E2E) asegurando la paridad de contratos entre FastAPI y el cliente frontend, sin filtrar rutas privadas locales.
 
@@ -18,7 +18,7 @@ alwaysApply: false
 - ⛔ **NUNCA** incluyas rutas absolutas de tu máquina local (ej. `/Users/...` o `C:\...`) en código, documentación, `.env` o mensajes de commit.
 - ⛔ **NUNCA** alteres o elimines campos en un esquema Pydantic (`*Read`, `*Create`) sin verificar o actualizar el DTO/interfaz correspondiente en el repositorio frontend hermano.
 - ⛔ **NUNCA** mezcles cambios de ambos repositorios en un único commit. Cada repositorio mantiene su propio control de versiones e historial Git independiente.
-- 🔒 **MANDATORIO:** Resuelve siempre la ubicación del frontend de forma relativa: `../vitaly-care-for-families` o `$(git rev-parse --show-toplevel)/../vitaly-care-for-families`.
+- 🔒 **MANDATORIO:** Resuelve siempre la ubicación del frontend de forma relativa: `../vitaly_frontend/vitaly-care-for-families` o `$(git rev-parse --show-toplevel)/../vitaly_frontend/vitaly-care-for-families`.
 - 🔒 **MANDATORIO:** Todo endpoint nuevo debe exponerse con el prefijo `/api/v1/` y responder con el formato unificado `APIResponse[T]`.
 
 ## 3. Directivas Prescriptivas para Tareas E2E
@@ -32,11 +32,11 @@ Cuando el usuario solicite implementar una funcionalidad End-to-End desde este r
 2. **Fase 2: Verificación de Disponibilidad del Frontend:**
    - Comprueba si el directorio hermano existe de forma relativa:
      ```bash
-     FRONTEND_DIR="$(git rev-parse --show-toplevel)/../vitaly-care-for-families"
+     FRONTEND_DIR="$(git rev-parse --show-toplevel)/../vitaly_frontend/vitaly-care-for-families"
      if [ -d "$FRONTEND_DIR" ]; then ... fi
      ```
 3. **Fase 3: Sincronización de Tipos y Servicios en Frontend:**
-   - Inspecciona o crea el servicio en `../vitaly-care-for-families/src/services/[feature]/[feature]Service.ts`.
+   - Inspecciona o crea el servicio en `../vitaly_frontend/vitaly-care-for-families/src/services/[feature]/[feature]Service.ts`.
    - Asegura que la interfaz TypeScript refleje el payload desempaquetado de `APIResponse.data`.
    - Agrega la llamada a `apiClient` con la ruta relativa exacta (ej. `/api/v1/...`).
 4. **Fase 4: Consumo UI y Cláusulas de Guarda:**
@@ -53,7 +53,7 @@ cd /Users/usuario/Desarrollo/proyecto/vitaly-care-for-families # ❌ Ruta privad
 ### ✅ Patrón Estándar (DO)
 ```bash
 # Bien: Resolución dinámica y relativa basada en el árbol de trabajo
-FRONTEND_PATH="$(git rev-parse --show-toplevel)/../vitaly-care-for-families"
+FRONTEND_PATH="$(git rev-parse --show-toplevel)/../vitaly_frontend/vitaly-care-for-families"
 
 if [ -d "$FRONTEND_PATH" ]; then
   echo "Repositorio frontend detectado en: $FRONTEND_PATH"

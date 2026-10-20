@@ -29,7 +29,7 @@ Garantizar una API REST escalable, predecible y fuertemente tipada mediante la a
 - **Capa de Servicios (`app/services/`):** Aislar completamente la lógica de negocio y el acceso a datos fuera de los controladores de ruta. supabase-py no ofrece transacciones multi-tabla: ordenar las escrituras validando cada `response.data`, o encapsular la operación en una función Postgres invocada con `.rpc()` cuando se requiera atomicidad.
 - **Errores Inesperados:** `app/main.py` (L45-46) solo registra handlers para `RequestValidationError` y `StarletteHTTPException`; por eso los servicios envuelven las excepciones no previstas en `HTTPException(status_code=500, ...)` para conservar el envelope `APIResponse`.
 - **Modelos Pydantic (`app/schemas/`):** Aplicar estrictamente la convención de nomenclatura `*Base`, `*Create`, `*Update`, `*Read`, `*Filter` y enriquecer con `Field(description=...)`.
-- **Ecosistema Multi-Repo:** Asegurar que los cambios en esquemas mantengan compatibilidad con el frontend hermano (`../vitaly-care-for-families`).
+- **Ecosistema Multi-Repo:** Asegurar que los cambios en esquemas mantengan compatibilidad con el frontend hermano (`../vitaly_frontend/vitaly-care-for-families`).
 
 ---
 
