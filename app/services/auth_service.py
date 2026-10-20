@@ -1,3 +1,5 @@
+"""Registro de usuarios por rol, autenticación y revocación de tokens."""
+
 from fastapi import HTTPException, status
 from app.core.database import supabase
 from app.core.security import get_password_hash, verify_password, create_access_token
@@ -7,7 +9,29 @@ import uuid
 from datetime import datetime
 
 class AuthService:
+    """Servicio de autenticación y alta de cuentas para los cuatro roles."""
+
     def _create_base_user(self, user_in, role_enum: UserRole):
+        """Crea la fila en ``user`` y su mapeo de rol en ``user_roles``.
+
+        Paso común a los cuatro flujos de registro. La cuenta nace inactiva
+        (``is_active=False``): requiere aprobación de un administrador antes de
+        poder iniciar sesión.
+
+        Args:
+            user_in: Esquema de registro del rol correspondiente. Debe exponer
+                ``correo``, ``contraseña``, ``nombre``, ``apellido`` y
+                ``fecha_de_nacimiento``.
+            role_enum: Rol que se asignará a la cuenta recién creada.
+
+        Returns:
+            int: ID del usuario creado en la tabla ``user``.
+
+        Raises:
+            HTTPException: 400 si el correo ya está registrado, o si falta el
+                documento de identidad en el registro de un representante.
+            HTTPException: 500 si la inserción en ``user`` no devuelve la fila.
+        """
         # 1. Verificar si el usuario ya existe (usamos tabla 'user' singular)
         user_response = supabase.table("user").select("id").eq("email", user_in.correo).execute()
         
@@ -58,6 +82,21 @@ class AuthService:
         return new_user_id
 
     def register_system_admin(self, user_in):
+        """Registra un administrador de sistema y su perfil en ``system_administrator``.
+
+        Le asigna el nivel de privilegio básico (1).
+
+        Args:
+            user_in: Datos de registro validados del administrador de sistema.
+
+        Returns:
+            str: Mensaje de confirmación indicando que la cuenta queda pendiente
+            de verificación.
+
+        Raises:
+            HTTPException: 400 si el correo ya está registrado.
+            HTTPException: 500 si falla la creación del usuario base.
+        """
         new_user_id = self._create_base_user(user_in, UserRole.ADMIN_SISTEMA)
         
         supabase.table("system_administrator").insert({
@@ -68,6 +107,22 @@ class AuthService:
         return "El administrador de sistema ha sido creado exitosamente, pero debe esperar a ser verificado para continuar."
 
     def register_school_admin(self, user_in):
+        """Registra un administrador de escuela y su perfil en ``school_administrator``.
+
+        Lo vincula a la escuela indicada en ``user_in.school_id``, que define su alcance
+        de datos para el resto del sistema.
+
+        Args:
+            user_in: Datos de registro validados del administrador de escuela.
+
+        Returns:
+            str: Mensaje de confirmación indicando que la cuenta queda pendiente
+            de verificación.
+
+        Raises:
+            HTTPException: 400 si el correo ya está registrado.
+            HTTPException: 500 si falla la creación del usuario base.
+        """
         new_user_id = self._create_base_user(user_in, UserRole.ADMIN_ESCUELA)
         
         supabase.table("school_administrator").insert({
@@ -80,6 +135,21 @@ class AuthService:
         return "El administrador de escuela ha sido creado exitosamente, pero debe esperar a ser verificado para continuar."
 
     def register_doctor(self, user_in):
+        """Registra un médico y su perfil en ``doctor``.
+
+        Registra su número de licencia y especialidad.
+
+        Args:
+            user_in: Datos de registro validados del médico.
+
+        Returns:
+            str: Mensaje de confirmación indicando que la cuenta queda pendiente
+            de verificación.
+
+        Raises:
+            HTTPException: 400 si el correo ya está registrado.
+            HTTPException: 500 si falla la creación del usuario base.
+        """
         new_user_id = self._create_base_user(user_in, UserRole.DOCTOR)
         
         supabase.table("doctor").insert({
@@ -91,6 +161,25 @@ class AuthService:
         return "El perfil de doctor ha sido creado exitosamente, pero debe esperar a ser verificado para continuar."
 
     def register_parent(self, user_in: ParentRegister):
+        """Registra un representante y lo vincula con sus estudiantes autorizados.
+
+        Tras crear el perfil en ``parent``, busca los estudiantes cuyo representante
+        autorizado coincide con el documento de identidad recibido y los vincula
+        automáticamente.
+
+        Args:
+            user_in: Datos de registro del representante. ``identity_number`` es
+                obligatorio y es la clave de la vinculación automática.
+
+        Returns:
+            str: Mensaje de confirmación. Si hubo vinculación automática, indica
+            cuántos estudiantes se asociaron.
+
+        Raises:
+            HTTPException: 400 si el correo ya está registrado o falta el documento
+                de identidad.
+            HTTPException: 500 si falla la creación del usuario base.
+        """
         new_user_id = self._create_base_user(user_in, UserRole.REPRESENTANTE)
         
         supabase.table("parent").insert({
@@ -115,6 +204,22 @@ class AuthService:
         return msg
         
     def authenticate_user(self, user_in: UserLogin):
+        """Valida las credenciales y emite el JWT de acceso.
+
+        El token incluye ``sub``, ``email``, ``role`` y datos de presentación
+        propios del rol. No incluye claim de escuela: el ``school_id`` se resuelve
+        siempre en el servidor a partir de ``sub``.
+
+        Args:
+            user_in: Correo y contraseña enviados por el cliente.
+
+        Returns:
+            Token: Token JWT de tipo ``bearer``.
+
+        Raises:
+            HTTPException: 401 si el correo no existe o la contraseña no coincide.
+            HTTPException: 403 si la cuenta fue eliminada o aún no está aprobada.
+        """
         user_response = supabase.table("user").select("*").eq("email", user_in.email).execute()
         if not user_response.data:
             raise HTTPException(
@@ -179,9 +284,18 @@ class AuthService:
         return Token(access_token=access_token, token_type="bearer")
 
     def revoke_token(self, token: str, expires_at: int):
-        """
-        Add a token to the blacklist.
-        'expires_at' should be the timestamp from the JWT 'exp' claim.
+        """Añade un token a la lista negra para invalidarlo antes de su expiración.
+
+        Es el mecanismo de logout: el token sigue siendo criptográficamente válido,
+        pero :func:`~app.api.deps.get_current_user_token` lo rechaza con 401.
+
+        Args:
+            token: JWT completo a revocar.
+            expires_at: Timestamp del claim ``exp``, usado para poder purgar la
+                lista negra una vez que el token caduca por sí solo.
+
+        Returns:
+            None: Inserta la fila en ``token_blacklist`` como efecto secundario.
         """
         expires_at_dt = datetime.utcfromtimestamp(expires_at)
         supabase.table("token_blacklist").insert({
@@ -190,10 +304,16 @@ class AuthService:
         }).execute()
 
     def is_token_revoked(self, token: str) -> bool:
-        """
-        Check if a token has been revoked.
+        """Indica si un token está en la lista negra.
+
+        Args:
+            token: JWT completo a comprobar.
+
+        Returns:
+            bool: True si el token fue revocado por un logout previo.
         """
         response = supabase.table("token_blacklist").select("id").eq("token", token).execute()
         return len(response.data) > 0
 
+#: Instancia compartida del servicio, importada por endpoints y dependencias.
 auth_service = AuthService()

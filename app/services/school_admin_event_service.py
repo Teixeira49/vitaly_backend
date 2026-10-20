@@ -1,3 +1,10 @@
+"""Gestión de eventos escolares para el rol administrador de escuela.
+
+El alcance se resuelve siempre en el servidor: el ``sch_admin_id`` y el
+``school_id`` salen del ``user_id`` autenticado, y un evento solo es accesible si
+tiene una participación registrada a nombre de ese administrador.
+"""
+
 from fastapi import HTTPException
 from app.core.database import supabase
 from datetime import datetime, date
@@ -5,14 +12,27 @@ from calendar import monthrange
 
 
 class SchoolAdminEventService:
+    """Operaciones de eventos escolares con aislamiento por escuela."""
 
     # ──────────────────────────────────────────────────────────
     # Helpers internos
     # ──────────────────────────────────────────────────────────
 
     def _get_admin_record(self, user_id: int) -> dict:
-        """Obtiene el registro completo del school_administrator vinculado al user_id.
-        Retorna un dict con sch_admin_id y school_id. Lanza 403 si no existe."""
+        """Resuelve el registro de ``school_administrator`` del usuario autenticado.
+
+        Es el punto donde se deriva el tenant: ningún método acepta el
+        ``school_id`` desde el cliente.
+
+        Args:
+            user_id: ID del usuario autenticado (claim ``sub`` del JWT).
+
+        Returns:
+            dict: ``{"sch_admin_id": int, "school_id": int}``.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+        """
         sa_res = (
             supabase.table("school_administrator")
             .select("sch_admin_id, school_id")
@@ -27,7 +47,14 @@ class SchoolAdminEventService:
         return sa_res.data[0]
 
     def _get_school_classroom_ids(self, school_id: int) -> list[int]:
-        """Retorna los IDs de todos los classrooms activos de una escuela."""
+        """Retorna los IDs de todos los salones activos de una escuela.
+
+        Args:
+            school_id: ID de la escuela, ya resuelto en el servidor.
+
+        Returns:
+            list[int]: IDs de los salones no eliminados. Lista vacía si no hay.
+        """
         res = (
             supabase.table("classroom")
             .select("id")
@@ -38,7 +65,15 @@ class SchoolAdminEventService:
         return [c["id"] for c in res.data] if res.data else []
 
     def _get_school_doctor_ids(self, school_id: int) -> list[int]:
-        """Retorna los doc_ids de los doctores asignados a la escuela."""
+        """Retorna los IDs de los médicos asignados a una escuela.
+
+        Args:
+            school_id: ID de la escuela, ya resuelto en el servidor.
+
+        Returns:
+            list[int]: IDs de los médicos en ``doctor_to_school``. Lista vacía si
+            la escuela no tiene médicos asignados.
+        """
         res = (
             supabase.table("doctor_to_school")
             .select("doctor_id")
@@ -48,13 +83,31 @@ class SchoolAdminEventService:
         return [d["doctor_id"] for d in res.data] if res.data else []
 
     def _base_event_filter(self):
-        """Condiciones base: no cancelado y no eliminado."""
+        """Condiciones base de un evento vigente: ni cancelado ni eliminado.
+
+        Returns:
+            dict: ``{"is_canceled": False, "is_deleted": False}``, pensado para
+            reutilizarse como filtro.
+        """
         return {"is_canceled": False, "is_deleted": False}
 
     def _validate_event_ownership(self, event_id: int, sch_admin_id: int) -> dict:
-        """Verifica que el evento existe, no está cancelado ni eliminado,
-        y que fue creado por un admin de la misma escuela.
-        Retorna el registro del evento."""
+        """Comprueba que un evento existe y pertenece al administrador indicado.
+
+        La pertenencia es indirecta: se exige que el evento tenga al menos una
+        participación registrada a nombre de ``sch_admin_id``.
+
+        Args:
+            event_id: ID del evento a validar.
+            sch_admin_id: ID del administrador escolar resuelto en el servidor.
+
+        Returns:
+            dict: Fila completa del evento.
+
+        Raises:
+            HTTPException: 404 si no existe un evento activo con ese ID.
+            HTTPException: 403 si el evento pertenece a otra escuela.
+        """
         event_res = (
             supabase.table("event")
             .select("*")
@@ -92,6 +145,24 @@ class SchoolAdminEventService:
     # ──────────────────────────────────────────────────────────
 
     def create_event(self, user_id: int, payload) -> dict:
+        """Crea un evento y sus participaciones de salones y médicos.
+
+        Valida que todos los salones y médicos indicados pertenezcan a la escuela
+        del administrador antes de insertar nada.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            payload: :class:`~app.schemas.event.EventCreate` con los datos del
+                evento y los IDs de salones y médicos convocados.
+
+        Returns:
+            dict: ``event_id``, ``title``, ``classrooms_linked`` y ``doctors_linked``.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+            HTTPException: 400 si algún salón o médico no pertenece a la escuela.
+            HTTPException: 500 si la inserción del evento no devuelve la fila.
+        """
         admin = self._get_admin_record(user_id)
         sch_admin_id = admin["sch_admin_id"]
         school_id = admin["school_id"]
@@ -157,6 +228,23 @@ class SchoolAdminEventService:
     # ──────────────────────────────────────────────────────────
 
     def get_events(self, user_id: int, page: int, size: int) -> dict:
+        """Lista de forma paginada los eventos de la escuela del administrador.
+
+        Solo incluye eventos vigentes (ni cancelados ni eliminados), ordenados del
+        más reciente al más antiguo.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            page: Número de página, comenzando en 1.
+            size: Cantidad de eventos por página.
+
+        Returns:
+            dict: ``{"data": [...], "total": int, "page": int, "size": int}``. Si el
+            administrador no tiene eventos, ``data`` viene vacío y ``total`` en 0.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+        """
         admin = self._get_admin_record(user_id)
         sch_admin_id = admin["sch_admin_id"]
 
@@ -211,6 +299,23 @@ class SchoolAdminEventService:
     # ──────────────────────────────────────────────────────────
 
     def get_events_by_month(self, user_id: int, year: int, month: int) -> dict:
+        """Lista los eventos del administrador que caen dentro de un mes concreto.
+
+        Pensado para la vista de calendario: devuelve el mes completo sin paginar,
+        ordenado cronológicamente.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            year: Año del período a consultar, ej. 2026.
+            month: Mes del período a consultar, de 1 a 12.
+
+        Returns:
+            dict: ``{"data": [...], "year": int, "month": int, "total": int}``.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+            calendar.IllegalMonthError: Si ``month`` queda fuera del rango 1-12.
+        """
         admin = self._get_admin_record(user_id)
         sch_admin_id = admin["sch_admin_id"]
 
@@ -257,6 +362,20 @@ class SchoolAdminEventService:
     # ──────────────────────────────────────────────────────────
 
     def get_event_detail(self, user_id: int, event_id: int) -> dict:
+        """Devuelve un evento con el detalle de sus salones y médicos convocados.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            event_id: ID del evento a consultar.
+
+        Returns:
+            dict: Datos del evento junto con sus participaciones resueltas.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela, o
+                si el evento pertenece a otra escuela.
+            HTTPException: 404 si no existe un evento activo con ese ID.
+        """
         admin = self._get_admin_record(user_id)
         sch_admin_id = admin["sch_admin_id"]
 
@@ -369,6 +488,23 @@ class SchoolAdminEventService:
     # ──────────────────────────────────────────────────────────
 
     def cancel_event(self, user_id: int, event_id: int) -> dict:
+        """Cancela un evento y, en cascada, todas sus participaciones.
+
+        Es una cancelación lógica (``is_canceled=True``): el evento deja de
+        aparecer en los listados pero su registro se conserva.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            event_id: ID del evento a cancelar.
+
+        Returns:
+            dict: ``{"event_id": int, "status": "canceled"}``.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela, o
+                si el evento pertenece a otra escuela.
+            HTTPException: 404 si no existe un evento activo con ese ID.
+        """
         admin = self._get_admin_record(user_id)
         sch_admin_id = admin["sch_admin_id"]
 
@@ -393,6 +529,27 @@ class SchoolAdminEventService:
     # ──────────────────────────────────────────────────────────
 
     def update_event(self, user_id: int, event_id: int, payload: dict) -> dict:
+        """Actualiza los datos base de un evento, sin tocar sus participaciones.
+
+        Solo aplica los campos enviados de entre ``title``, ``description``,
+        ``init_time`` y ``ent_time``, y revalida que la fecha de fin siga siendo
+        posterior a la de inicio con los valores resultantes.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            event_id: ID del evento a actualizar.
+            payload: Campos a modificar. Los omitidos conservan su valor actual.
+
+        Returns:
+            dict: Fila del evento ya actualizada.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela, o
+                si el evento pertenece a otra escuela.
+            HTTPException: 404 si no existe un evento activo con ese ID.
+            HTTPException: 400 si no se envió ningún campo válido, o si la fecha de
+                finalización no es posterior a la de inicio.
+        """
         admin = self._get_admin_record(user_id)
         sch_admin_id = admin["sch_admin_id"]
 
@@ -436,4 +593,5 @@ class SchoolAdminEventService:
         return result.data[0] if result.data else {"event_id": event_id, "status": "updated"}
 
 
+#: Instancia compartida del servicio, importada por los endpoints de eventos.
 school_admin_event_service = SchoolAdminEventService()
