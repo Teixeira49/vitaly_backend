@@ -1,6 +1,6 @@
 ---
 name: vitaly-contracts-parity
-description: "Keep Vitaly's Pydantic schemas (backend) and the TypeScript interfaces in ../vitaly-care-for-families/src/services in sync: type equivalence table, APIResponse.data unwrapping, OpenAPI diff check. Trigger: creating or modifying an endpoint's response_model or payload, a schema in app/schemas/, a frontend service DTO, or when the frontend and API disagree on a field, type or nullability."
+description: "Keep Vitaly's Pydantic schemas (backend) and the TypeScript interfaces in ../vitaly_frontend/vitaly-care-for-families/src/services in sync: type equivalence table, APIResponse.data unwrapping, OpenAPI diff check. Trigger: creating or modifying an endpoint's response_model or payload, a schema in app/schemas/, a frontend service DTO, or when the frontend and API disagree on a field, type or nullability."
 ---
 
 # Vitaly contracts parity — Pydantic ↔ TypeScript
@@ -15,8 +15,8 @@ and a drift fails silently until a user hits it.
 
 **A contract change touches both repos in the same task, in separate commits.** Editing a schema
 in `app/schemas/` or a handler's return shape means opening the matching service in
-`../vitaly-care-for-families/src/services/<feature>/<feature>Service.ts` before calling it done.
-Resolve the frontend path relatively (`$(git rev-parse --show-toplevel)/../vitaly-care-for-families`).
+`../vitaly_frontend/vitaly-care-for-families/src/services/<feature>/<feature>Service.ts` before calling it done.
+Resolve the frontend path relatively (`$(git rev-parse --show-toplevel)/../vitaly_frontend/vitaly-care-for-families`).
 
 Fields travel in **snake_case** on both sides. No camelCase conversion at the boundary.
 

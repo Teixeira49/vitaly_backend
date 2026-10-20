@@ -5,11 +5,13 @@ usuario. Todo endpoint no público declara uno de estos gates mediante
 ``Depends(...)``; las rutas públicas se marcan con ``# PUBLIC_ROUTE``.
 """
 
+from typing import Annotated
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
 from app.core.config import get_settings
-from app.schemas.enums import UserRole
+from app.schemas.enums import SCOPE_ROLES, TokenScope, UserRole
 from app.services.auth_service import auth_service
 
 settings = get_settings()
@@ -53,97 +55,155 @@ def get_current_user_token(credentials: HTTPAuthorizationCredentials = Depends(s
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-def get_current_admin_sistema(payload: dict = Depends(get_current_user_token)) -> dict:
+def _require_scope(payload: dict, scope: TokenScope) -> dict:
+    """Verifica que el token pertenece al portal y a uno de sus roles.
+
+    Args:
+        payload: Claims del JWT validado por get_current_user_token.
+        scope: Portal requerido para acceder al recurso.
+
+    Returns:
+        dict: El mismo payload cuando su scope y rol corresponden al portal.
+
+    Raises:
+        HTTPException: 401 si falta scope y se requiere un nuevo login; 403 si
+            el token procede de otro portal o su rol no pertenece a este.
+    """
+    token_scope = payload.get("scope")
+    if token_scope is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="El token no indica su procedencia. Por favor inicia sesión de nuevo.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    allowed_roles = {role.value for role in SCOPE_ROLES[scope]}
+    if token_scope != scope.value or payload.get("role") not in allowed_roles:
+        portal = "administración" if scope == TokenScope.ADMIN else "clientes"
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Este recurso requiere un token emitido por el portal de {portal}."
+        )
+    return payload
+
+def get_current_admin(payload: Annotated[dict, Depends(get_current_user_token)]) -> dict:
+    """Exige un token del portal de administración, reservado a admin_sistema.
+
+    Args:
+        payload: Claims del JWT con firma, expiración y revocación verificadas.
+
+    Returns:
+        dict: Payload validado con scope=admin y rol admin_sistema.
+
+    Raises:
+        HTTPException: 401 si el token es inválido o no incluye scope; 403 si
+            el scope o el rol no corresponden al portal de administración.
+    """
+    return _require_scope(payload, TokenScope.ADMIN)
+
+def get_current_client(payload: Annotated[dict, Depends(get_current_user_token)]) -> dict:
+    """Exige un token del portal de clientes.
+
+    Admite admin_escuela, doctor y representante. El gate de rol posterior
+    restringe el recurso; cada servicio resuelve la pertenencia desde sub.
+
+    Args:
+        payload: Claims del JWT con firma, expiración y revocación verificadas.
+
+    Returns:
+        dict: Payload validado con scope=client y un rol de este portal.
+
+    Raises:
+        HTTPException: 401 si el token es inválido o no incluye scope; 403 si
+            el scope o el rol no corresponden al portal de clientes.
+    """
+    return _require_scope(payload, TokenScope.CLIENT)
+
+def _require_role(payload: dict, role: UserRole) -> dict:
+    """Exige un rol concreto sobre un payload validado por su portal.
+
+    Args:
+        payload: Claims del JWT cuyo scope ya ha sido comprobado.
+        role: Rol requerido para ejecutar la operación.
+
+    Returns:
+        dict: El mismo payload cuando su rol coincide con el requerido.
+
+    Raises:
+        HTTPException: 403 si el usuario no tiene el rol requerido.
+    """
+    if payload.get("role") != role.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"No tienes los permisos suficientes para esta acción. Se requiere rol de {role.value}."
+        )
+    return payload
+
+def get_current_admin_sistema(payload: Annotated[dict, Depends(get_current_admin)]) -> dict:
     """Exige que el usuario autenticado sea un administrador de sistema.
 
     Su alcance es global: puede auditar cualquier escuela, por lo que sus rutas sí
     admiten recibir un ``school_id`` por path.
 
     Args:
-        payload: Payload del JWT ya validado por :func:`get_current_user_token`.
+        payload: Payload del JWT validado por el gate del portal correspondiente.
 
     Returns:
         dict: El mismo payload, para que el handler lea ``int(payload["sub"])``.
 
     Raises:
-        HTTPException: 401 si el token es inválido, expiró o fue revocado.
-        HTTPException: 403 si el rol del usuario no es ``admin_sistema``.
+        HTTPException: 401 si el token es inválido, expiró, fue revocado o no incluye scope.
+        HTTPException: 403 si el scope no corresponde al portal o el rol del usuario no es ``admin_sistema``.
     """
-    role = payload.get("role")
-    if role != UserRole.ADMIN_SISTEMA.value:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tienes los permisos suficientes para esta acción. Se requiere rol de admin_sistema."
-        )
-    return payload
+    return _require_role(payload, UserRole.ADMIN_SISTEMA)
 
-def get_current_admin_escuela(payload: dict = Depends(get_current_user_token)) -> dict:
+def get_current_admin_escuela(payload: Annotated[dict, Depends(get_current_client)]) -> dict:
     """Exige que el usuario autenticado sea un administrador de escuela.
 
     Su alcance se limita a la escuela vinculada en ``school_administrator``; el
     ``school_id`` se resuelve en el servidor a partir de ``sub``, nunca del cliente.
 
     Args:
-        payload: Payload del JWT ya validado por :func:`get_current_user_token`.
+        payload: Payload del JWT validado por el gate del portal correspondiente.
 
     Returns:
         dict: El mismo payload, para que el handler lea ``int(payload["sub"])``.
 
     Raises:
-        HTTPException: 401 si el token es inválido, expiró o fue revocado.
-        HTTPException: 403 si el rol del usuario no es ``admin_escuela``.
+        HTTPException: 401 si el token es inválido, expiró, fue revocado o no incluye scope.
+        HTTPException: 403 si el scope no corresponde al portal o el rol del usuario no es ``admin_escuela``.
     """
-    role = payload.get("role")
-    if role != UserRole.ADMIN_ESCUELA.value:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tienes los permisos suficientes para esta acción. Se requiere rol de admin_escuela."
-        )
-    return payload
+    return _require_role(payload, UserRole.ADMIN_ESCUELA)
 
-def get_current_representante(payload: dict = Depends(get_current_user_token)) -> dict:
+def get_current_representante(payload: Annotated[dict, Depends(get_current_client)]) -> dict:
     """Exige que el usuario autenticado sea un representante.
 
     Su alcance se limita a los estudiantes vinculados a su registro en ``parent``.
 
     Args:
-        payload: Payload del JWT ya validado por :func:`get_current_user_token`.
+        payload: Payload del JWT validado por el gate del portal correspondiente.
 
     Returns:
         dict: El mismo payload, para que el handler lea ``int(payload["sub"])``.
 
     Raises:
-        HTTPException: 401 si el token es inválido, expiró o fue revocado.
-        HTTPException: 403 si el rol del usuario no es ``representante``.
+        HTTPException: 401 si el token es inválido, expiró, fue revocado o no incluye scope.
+        HTTPException: 403 si el scope no corresponde al portal o el rol del usuario no es ``representante``.
     """
-    role = payload.get("role")
-    if role != UserRole.REPRESENTANTE.value:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tienes los permisos suficientes para esta acción. Se requiere rol de representante."
-        )
-    return payload
+    return _require_role(payload, UserRole.REPRESENTANTE)
 
-def get_current_doctor(payload: dict = Depends(get_current_user_token)) -> dict:
+def get_current_doctor(payload: Annotated[dict, Depends(get_current_client)]) -> dict:
     """Exige que el usuario autenticado sea un médico.
 
     Su alcance se limita a las escuelas vinculadas en ``doctor_to_school``.
 
     Args:
-        payload: Payload del JWT ya validado por :func:`get_current_user_token`.
+        payload: Payload del JWT validado por el gate del portal correspondiente.
 
     Returns:
         dict: El mismo payload, para que el handler lea ``int(payload["sub"])``.
 
     Raises:
-        HTTPException: 401 si el token es inválido, expiró o fue revocado.
-        HTTPException: 403 si el rol del usuario no es ``doctor``.
+        HTTPException: 401 si el token es inválido, expiró, fue revocado o no incluye scope.
+        HTTPException: 403 si el scope no corresponde al portal o el rol del usuario no es ``doctor``.
     """
-    role = payload.get("role")
-    if role != UserRole.DOCTOR.value:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tienes los permisos suficientes para esta acción. Se requiere rol de doctor."
-        )
-    return payload
-
+    return _require_role(payload, UserRole.DOCTOR)

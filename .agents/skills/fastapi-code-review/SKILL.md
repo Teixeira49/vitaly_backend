@@ -33,7 +33,7 @@ issues CUMPLE/APRUEBO. `pr-review` invokes it as its technical checklist for fil
 | G4 | Empty vs missing | Empty collection → 200 + `data=[]`. Missing single resource → 404. Mutations check `response.data` before assuming success. | `empty-table-validation.md` |
 | G5 | Schema naming | New schemas use `*Base/*Create/*Update/*Read/*Filter`, `Field(description=...)`, no secrets in `*Read`. Legacy `*Response` tolerated. | `schema-naming-convention.md` |
 | G6 | Docs (Issue #8) | Endpoints: `summary` + `description` and a docstring stating tenant scope, allowed role, `Raises`. Services: Google-style docstrings. | `CLAUDE.md` §4 |
-| G7 | Contract parity | Any added/renamed/removed/nullable-changed field in a `response_model` or payload has a matching change in `../vitaly-care-for-families/src/services`. | `cross-repo-e2e.md`, `vitaly-contracts-parity` |
+| G7 | Contract parity | Any added/renamed/removed/nullable-changed field in a `response_model` or payload has a matching change in `../vitaly_frontend/vitaly-care-for-families/src/services`. | `cross-repo-e2e.md`, `vitaly-contracts-parity` |
 | G8 | Sync/async | Handlers calling supabase-py (or any blocking I/O) are `def`. `async def` only if every I/O call inside is awaited async. | [references/async.md](references/async.md) |
 
 ## Severity mapping

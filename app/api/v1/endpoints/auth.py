@@ -4,12 +4,30 @@ from fastapi import APIRouter, Depends
 from fastapi.security import HTTPAuthorizationCredentials
 
 from app.api.deps import get_current_user_token, security
-from app.core.openapi_responses import BAD_REQUEST, PROTECTED_RESPONSES, PUBLIC_RESPONSES, UNAUTHORIZED, FORBIDDEN_ROLE
-from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, ParentRegister, UserLogin, Token
+from app.core.openapi_responses import BAD_REQUEST, PROTECTED_RESPONSES, PUBLIC_RESPONSES, error_response
+from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, ParentRegister, UserLogin, AdminLoginCreate, Token
+from app.schemas.enums import TokenScope
 from app.schemas.responses import APIResponse
 from app.services.auth_service import auth_service
 
 router = APIRouter()
+admin_router = APIRouter()
+
+# Errores comunes de ambos portales, con ejemplos del envelope estándar.
+LOGIN_ERROR_RESPONSES = {
+    **PUBLIC_RESPONSES,
+    **error_response(401, "Unauthorized: correo o contraseña incorrectos.", "Credenciales incorrectas"),
+    **error_response(
+        403,
+        "Forbidden: cuenta eliminada, inactiva o con un rol ajeno a este portal. No se emite ningún token.",
+        "Esta cuenta no tiene acceso al portal solicitado.",
+    ),
+    **error_response(
+        500,
+        "Internal Server Error: no se pudo completar el login. Inténtalo de nuevo más tarde.",
+        "No se pudo iniciar sesión. Inténtalo de nuevo más tarde.",
+    ),
+}
 
 #: Registro: cualquiera puede solicitarlo; el 400 cubre el correo ya existente.
 _REGISTER_RESPONSES = {**PUBLIC_RESPONSES, **BAD_REQUEST}
@@ -142,30 +160,28 @@ def register_parent(user_in: ParentRegister):
 @router.post(
     "/login",
     response_model=APIResponse[Token],
-    summary="Iniciar sesión",
-    description=(
-        "Valida las credenciales y devuelve un JWT de tipo bearer. Requiere una "
-        "cuenta aprobada y no eliminada. El token incluye el rol pero no la "
-        "escuela: el alcance por institución se resuelve en el servidor en cada "
-        "petición."
-    ),
-    responses={**PUBLIC_RESPONSES, **UNAUTHORIZED, **FORBIDDEN_ROLE},
+    summary="Login del portal de clientes",
+    description="Autentica a administradores de escuela, doctores y representantes. "
+    "Un admin_sistema es rechazado con 403 y debe usar `POST /auth/admin/login`.",
+    responses=LOGIN_ERROR_RESPONSES,
 )
 def login(user_in: UserLogin):
-    """Autentica al usuario y emite su token de acceso.
+    """Autentica al usuario del portal de clientes y emite un JWT con scope=client.
 
     Multi-tenancy:
-        El token no lleva claim de escuela a propósito; cada servicio resuelve el
-        'school_id' a partir del claim 'sub'.
+        El token no incluye school_id; cada servicio lo resuelve desde el claim sub.
 
     RBAC:
-        Ruta pública: no requiere token.
+        Ruta pública. Admite admin_escuela, doctor y representante; admin_sistema
+        debe utilizar POST /api/v1/auth/admin/login.
 
     Raises:
-        HTTPException(401): Si el correo no existe o la contraseña no coincide.
-        HTTPException(403): Si la cuenta fue eliminada o aún no está aprobada.
+        HTTPException(401): Si las credenciales son incorrectas.
+        HTTPException(403): Si la cuenta está eliminada, inactiva o su rol no
+            pertenece al portal de clientes.
+        HTTPException(500): Si falla una operación interna del login.
     """
-    token_response = auth_service.authenticate_user(user_in)
+    token_response = auth_service.authenticate_user(user_in, TokenScope.CLIENT)
     return APIResponse(data=token_response, message="Login exitoso")
 
 
@@ -199,3 +215,32 @@ def logout(
     expires_at = payload.get("exp")
     auth_service.revoke_token(token, expires_at)
     return APIResponse(data="Logout exitoso", message="Sesión cerrada correctamente")
+
+
+# PUBLIC_ROUTE
+@admin_router.post(
+    "/login",
+    response_model=APIResponse[Token],
+    summary="Login del portal de administración",
+    description="Autentica exclusivamente a administradores de sistema. Cualquier otro rol "
+    "es rechazado con 403 antes de emitir el token y debe usar `POST /auth/login`.",
+    responses=LOGIN_ERROR_RESPONSES,
+)
+def admin_login(user_in: AdminLoginCreate):
+    """Autentica al administrador de sistema y emite un JWT con scope=admin.
+
+    Multi-tenancy:
+        No aplica: admin_sistema tiene alcance global sobre las escuelas.
+
+    RBAC:
+        Ruta pública. Solo admite admin_sistema; los demás roles utilizan
+        POST /api/v1/auth/login y son rechazados aquí antes de emitir el JWT.
+
+    Raises:
+        HTTPException(401): Si las credenciales son incorrectas.
+        HTTPException(403): Si la cuenta está eliminada, inactiva o su rol no
+            pertenece al portal de administración.
+        HTTPException(500): Si falla una operación interna del login.
+    """
+    token_response = auth_service.authenticate_user(user_in, TokenScope.ADMIN)
+    return APIResponse(data=token_response, message="Login exitoso")

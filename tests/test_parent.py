@@ -41,6 +41,7 @@ def parent_payload(user_id: int = 50) -> dict:
         "sub": str(user_id),
         "email": "madre@vitaly.com",
         "role": "representante",
+        "scope": "client",
         "name": "Ana López",
         "gender": "FEMENINO",
         "type_representative": "Madre",
@@ -53,6 +54,7 @@ def admin_school_payload(user_id: int = 20) -> dict:
         "sub": str(user_id),
         "email": "admin@vitaly.com",
         "role": "admin_escuela",
+        "scope": "client",
         "name": "Laura Pérez",
         "gender": "FEMENINO",
     }
@@ -64,6 +66,7 @@ def doctor_payload(user_id: int = 30) -> dict:
         "sub": str(user_id),
         "email": "doctor@vitaly.com",
         "role": "doctor",
+        "scope": "client",
         "name": "Roberto Sánchez",
         "gender": "MASCULINO",
     }
@@ -75,6 +78,7 @@ def sys_admin_payload(user_id: int = 10) -> dict:
         "sub": str(user_id),
         "email": "sysadmin@vitaly.com",
         "role": "admin_sistema",
+        "scope": "admin",
         "name": "Carlos Mendoza",
         "gender": "MASCULINO",
     }
@@ -282,7 +286,7 @@ class TestLinkStudentsRBAC:
         assert response.status_code == 403
         body = response.json()
         assert body["success"] is False
-        assert "Se requiere rol de representante" in body["message"]
+        assert "token emitido por el portal de clientes" in body["message"]
 
     def test_link_students_with_revoked_token_returns_401(self, client):
         """Token revocado previamente -> 401 Unauthorized."""

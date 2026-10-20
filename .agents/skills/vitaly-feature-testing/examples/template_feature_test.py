@@ -37,6 +37,7 @@ def admin_payload(user_id: int = 4) -> dict:
         "sub": str(user_id),
         "email": "admin@colegio.test",
         "role": "admin_escuela",
+        "scope": "client",
         "name": "Laura Pérez",
         "gender": "FEMENINO",
         "administrative_position": "Coordinadora",
@@ -200,7 +201,7 @@ def test_http_error_body_uses_envelope(admin_client):
 
 def test_wrong_role_returns_403(client):
     # Override the token decoder, NOT the role gate, so get_current_admin_escuela really runs.
-    app.dependency_overrides[get_current_user_token] = lambda: {"sub": "30", "role": "representante"}
+    app.dependency_overrides[get_current_user_token] = lambda: {"sub": "30", "role": "representante", "scope": "client"}
     response = client.get(URL.format(classroom_id=7))
 
     assert response.status_code == 403
@@ -214,7 +215,7 @@ def test_invalid_token_returns_401(client):
 
 
 def test_revoked_token_returns_401(client):
-    token = create_access_token({"sub": "4", "role": "admin_escuela"})
+    token = create_access_token({"sub": "4", "role": "admin_escuela", "scope": "client"})
     with patch.object(auth_service, "is_token_revoked", return_value=True):
         response = client.get(URL.format(classroom_id=7),
                               headers={"Authorization": f"Bearer {token}"})

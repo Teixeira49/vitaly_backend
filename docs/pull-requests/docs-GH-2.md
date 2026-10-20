@@ -4,9 +4,9 @@ Documentación formal de todo el backend, cerrando el issue #2. Es la contrapart
 
 Cambios concretos:
 
-1. **Nuevo `app/core/openapi_responses.py`** — bloques reutilizables de respuestas de error (401/403/404/422/500 sobre el envelope `APIResponse`, más 400/409 y la factoría `error_response`) con presets compuestos (`PUBLIC_RESPONSES`, `PROTECTED_RESPONSES`, `TENANT_DETAIL_RESPONSES`, …). Evita duplicar un diccionario literal en cada una de las 68 rutas.
-2. **Endpoints (`app/api/`)** — los 68 endpoints pasan de 6/68 a 68/68 en `summary`, `description` y `responses`. Sus docstrings se reescriben con las secciones obligatorias **Multi-tenancy**, **RBAC** y **Raises**; ya no queda ninguno de 1–2 líneas (antes había 22).
-3. **Docstrings de código (`app/services/`, `app/core/`, `app/utils/`, `app/api/deps.py`)** — de 39/101 a **102/102** funciones documentadas en estilo Google (`Args`, `Returns`, `Raises`), más docstring de módulo y de clase en cada archivo.
+1. **Nuevo `app/core/openapi_responses.py`** — bloques reutilizables de respuestas de error (401/403/404/422/500 sobre el envelope `APIResponse`, más 400/409 y la factoría `error_response`) con presets compuestos (`PUBLIC_RESPONSES`, `PROTECTED_RESPONSES`, `TENANT_DETAIL_RESPONSES`, …). Evita duplicar un diccionario literal en cada una de las 69 rutas de `/api/v1`.
+2. **Endpoints (`app/api/`)** — los **69/69 endpoints de `/api/v1`** tienen `summary`, `description` y `responses`. Todos incluyen las secciones **Multi-tenancy** y **RBAC** en sus docstrings y documentan resultados y excepciones según corresponda; ya no queda ninguno de 1–2 líneas.
+3. **Docstrings de código (`app/services/`, `app/core/`, `app/utils/`, `app/api/deps.py`)** — **103/103** funciones cuentan con docstring; se añaden descripciones, argumentos, resultados y excepciones según corresponda, además de docstrings de módulo y clase.
 4. **Esquemas (`app/schemas/`)** — de 15/204 a **204/204** campos con `Field(description=...)`, y docstring en cada modelo Pydantic.
 5. **Marcadores `# PUBLIC_ROUTE`** — migrados en `catalogs.py` desde dentro del docstring a un comentario encima de la función (como pide `rbac-enforcement.md`) y añadidos a las demás rutas realmente públicas (`auth`, `school`, raíz y health).
 
@@ -32,13 +32,14 @@ Closes #2
 
 ## ¿Cómo se ha probado esto?
 
-Prueba manual: la verificación principal es visual, en Swagger (`/docs`). Los 272 tests existentes pasan sin cambios, lo que confirma que no se alteró comportamiento.
+Prueba manual: la verificación principal es visual, en Swagger (`/docs`). Los **301 tests** de la base actual pasan sin modificar sus pruebas. Una comparación independiente del AST confirmó que la resolución conserva la lógica de `development`, incluidos los scopes, los gates y el manejo de errores 500 del login incorporados por #41. Se verificó también la generación de OpenAPI: 69/69 endpoints de `/api/v1` con metadatos, 204/204 campos declarados con descripción y ambos logins con respuestas 401/403/422/500 y ejemplos JSON.
 
 - [ ] **Abrir `http://localhost:8000/docs`** → cada endpoint muestra su título corto, su descripción y, al desplegarlo, los códigos 401/403/404/422/500 con un ejemplo del envelope `APIResponse` (`success: false`, `message`, `data: null`).
 - [ ] **GET `/api/v1/catalogs/states`** (rol: ninguno, ruta pública) → 200 con la lista de estados; en `/docs` aparece sin candado y con 422/500 documentados.
 - [ ] **GET `/api/v1/school-admin/classrooms/{classroom_id}/students`** (rol: `admin_escuela`) → 200 con los estudiantes del salón propio; con el `classroom_id` de otra escuela → 403; con un id inexistente → 404. Ambos códigos están descritos en `/docs`.
 - [ ] **GET `/api/v1/admin/schools/{school_id}`** (rol: `admin_sistema`) → 200 con el detalle; con un id inexistente → 404.
-- [ ] **POST `/api/v1/auth/login`** (rol: ninguno, ruta pública) → 200 con el token; credenciales malas → 401; cuenta sin aprobar → 403.
+- [ ] **POST `/api/v1/auth/login`** (rol: ninguno, ruta pública) → 200 con token `scope=client` para admin_escuela, doctor y representante; credenciales malas → 401; cuenta sin aprobar o portal equivocado → 403.
+- [ ] **POST `/api/v1/auth/admin/login`** (rol: ninguno, ruta pública) → 200 con token `scope=admin` para admin_sistema; errores inesperados en ambos logins → 500 con envelope `APIResponse`.
 - [ ] **Revisar los esquemas en `/docs`** → al desplegar cualquier modelo (`SchoolRead`, `StudentCreate`, `APIResponse`), cada campo muestra su descripción.
 
 **Configuración de prueba:**
@@ -56,6 +57,6 @@ Prueba manual: la verificación principal es visual, en Swagger (`/docs`). Los 2
 - [x] He comentado mi código, particularmente en áreas difíciles de entender
 - [x] He realizado los cambios correspondientes a la documentación.
 - [x] Mis cambios no generan nuevas advertencias
-- [x] Mis cambios pasan el build y lint del proyecto localmente *(`ruff check app/` → All checks passed)*
+- [x] Mis cambios pasan el build y lint del proyecto localmente *(`ruff check app tests` → All checks passed)*
 - [ ] He agregado pruebas que prueban que mi solución es efectiva o que mi función funciona *(no aplica: cambio exclusivamente documental, sin lógica nueva que probar)*
-- [x] Las pruebas unitarias nuevas y existentes pasan localmente con mis cambios *(272 passed)*
+- [x] Las pruebas unitarias nuevas y existentes pasan localmente con mis cambios *(301 passed)*

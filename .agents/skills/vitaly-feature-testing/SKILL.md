@@ -77,7 +77,7 @@ from app.main import app
 
 def admin_payload(user_id: int = 4) -> dict:
     return {"sub": str(user_id), "email": "admin@colegio.test", "role": "admin_escuela",
-            "name": "Laura Pérez", "gender": "FEMENINO",
+            "scope": "client", "name": "Laura Pérez", "gender": "FEMENINO",
             "administrative_position": "Coordinadora", "school": "Colegio San Ignacio"}
 
 @pytest.fixture
@@ -91,7 +91,9 @@ def admin_client():                      # same shape as tests/test_profile_phot
 
 - To test the **gate itself** (wrong role → 403), override `get_current_user_token`, not the
   role gate, so `get_current_<role>` really runs:
-  `app.dependency_overrides[get_current_user_token] = lambda: {"sub": "30", "role": "representante"}`.
+  `app.dependency_overrides[get_current_user_token] = lambda: {"sub": "30", "role": "representante", "scope": "client"}`.
+  Real tokens and these overrides must carry the `scope` claim (`client` for the client portal
+  roles, `admin` for admin_sistema); without it the scope gate answers 401 before the role gate.
 - 401 without overrides: send `Bearer not-a-jwt` (decode fails), or sign a real token with
   `app.core.security.create_access_token` and `patch.object(auth_service, "is_token_revoked", return_value=True)`.
 - Missing `Authorization` header → 401. Guaranteed by the pinned `fastapi[standard]>=0.122.0`

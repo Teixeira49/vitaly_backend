@@ -3,12 +3,21 @@ from datetime import date
 from typing import Optional
 
 
-class UserLogin(BaseModel):
-    """Credenciales de acceso enviadas al endpoint de login."""
+class LoginBase(BaseModel):
+    """Credenciales comunes a los portales de autenticación."""
 
-    email: EmailStr = Field(description="Correo electrónico registrado del usuario.")
-    password: str = Field(description="Contraseña en texto plano del usuario.")
+    email: EmailStr = Field(..., description="Correo electrónico registrado de la cuenta")
+    password: str = Field(..., description="Contraseña en texto plano de la cuenta")
 
+class UserLogin(LoginBase):
+    """Credenciales del portal de clientes (`POST /auth/login`): admin_escuela, doctor y representante."""
+
+class AdminLoginCreate(LoginBase):
+    """Credenciales del portal de administración (`POST /auth/admin/login`): solo admin_sistema.
+
+    Esquema separado de `UserLogin` para poder exigir en el futuro campos exclusivos del
+    portal de administración (ej. un segundo factor) sin afectar al de clientes.
+    """
 
 class SystemAdminRegister(BaseModel):
     """Datos de registro de un administrador de sistema."""
