@@ -18,11 +18,11 @@ frontend:
 4. **Documentación.** Regla RBAC y skill `vitaly-rbac` actualizadas con la nueva ruta y el
    alias.
 
-**Orden de despliegue:** esta PR → frontend #23 (consume `/auth/client/login`) → retirada
-del alias en una tarea posterior. Retirar el alias antes de desplegar #23 rompería el login
-de los tres roles de cliente.
+**Orden de despliegue:** esta PR → frontend Teixeira49/vitaly-care-for-families#28 (consume
+`/auth/client/login`) → retirada del alias en #43. Retirar el alias antes de desplegar el
+frontend rompería el login de los tres roles de cliente.
 
-Pendiente de decisión (abierta en #39): cuánto tiempo se mantiene el alias `/auth/login`.
+Pendiente de decisión (abierta en #43): cuánto tiempo se mantiene el alias `/auth/login`.
 
 Sin nuevas dependencias, variables de entorno ni migraciones.
 
