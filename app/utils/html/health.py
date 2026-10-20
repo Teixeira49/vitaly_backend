@@ -1,3 +1,4 @@
+"""Plantilla HTML estática del chequeo de salud visual (``GET /health-visual``)."""
 
 HEALTH_HTML = """
 <!DOCTYPE html>
