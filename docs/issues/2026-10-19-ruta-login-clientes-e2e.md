@@ -1,7 +1,8 @@
 ---
 title: "[♻️ Deuda técnica] Migrar el login de clientes a /auth/client/login de forma coordinada (E2E)"
 labels: [tech-debt, P3, api, schemas]
-issue: null
+issue: 39
+url: https://github.com/Teixeira49/vitaly_backend/issues/39
 ---
 
 ## Descripción
@@ -24,7 +25,7 @@ Al separar los portales de autenticación (issue #1), el login de clientes se ma
 
 ## Propuesta de solución
 1. Backend: exponer `POST /auth/client/login` y mantener `POST /auth/login` como alias marcado `deprecated=True` en OpenAPI durante la transición.
-2. Frontend: apuntar `authService.login` a `/api/v1/auth/client/login` (sin barra final).
+2. Frontend (issue propio, Teixeira49/vitaly-care-for-families#23): apuntar `authService.login` a `/api/v1/auth/client/login` y tipar el claim `scope` del JWT.
 3. Retirar el alias cuando el frontend desplegado ya no lo use.
 4. Renombrar de forma oportunista `UserLogin` a un nombre con sufijo estándar, coordinando la interfaz TypeScript.
 
@@ -38,4 +39,5 @@ Decisión abierta: ¿cuánto tiempo se mantiene el alias `/auth/login` antes de 
 
 ## Referencias
 - Issue #1 (separación de portales de autenticación).
+- Teixeira49/vitaly-care-for-families#23 (consumo de la nueva ruta y tipado de `scope` en el frontend).
 - `.agents/rules/cross-repo-e2e.md`, `.agents/rules/schema-naming-convention.md`, skill `vitaly-contracts-parity`.

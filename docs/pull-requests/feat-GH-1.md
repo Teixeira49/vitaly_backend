@@ -36,8 +36,9 @@ no se rompe.
 antes del cambio no llevan `scope` y reciben 401 (el frontend ya redirige a `/login` ante un
 401).
 
-Fuera de alcance: el refactor E2E de la ruta de clientes a `/auth/client/login` queda propuesto
-como tarea propia (`docs/issues/2026-10-19-ruta-login-clientes-e2e.md`). No se añaden factores
+Fuera de alcance: el refactor E2E de la ruta de clientes a `/auth/client/login` queda como tarea
+propia: #39 (backend) y Teixeira49/vitaly-care-for-families#23 (frontend, que además tipará el
+claim `scope`). No se añaden factores
 adicionales para admins (decisión: nada por ahora).
 
 Sin nuevas dependencias, variables de entorno ni migraciones.
