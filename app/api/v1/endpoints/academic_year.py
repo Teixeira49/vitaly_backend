@@ -1,18 +1,43 @@
+"""Gestión de los períodos escolares (años académicos)."""
+
 from fastapi import APIRouter, HTTPException
 from datetime import date
+
 from app.core.database import supabase
+from app.core.openapi_responses import BAD_REQUEST, PUBLIC_RESPONSES
 from app.schemas.responses import APIResponse
 from app.schemas.academic_year import AcademicYearCreate
 
 router = APIRouter()
 
-@router.post("", response_model=APIResponse[dict])
+# TODO(GH-14): esta ruta muta el eje temporal del sistema y hoy no exige token.
+# Queda sin marcador # PUBLIC_ROUTE a propósito: su exposición es un hallazgo de
+# seguridad abierto, no una decisión de diseño.
+@router.post(
+    "",
+    response_model=APIResponse[dict],
+    summary="Crear año académico",
+    description=(
+        "Registra un nuevo período escolar. El nombre se genera automáticamente "
+        "como 'Año escolar [año-inicio]-[año-fin]' y el período se marca como "
+        "vigente si la fecha de hoy cae dentro del rango.\n\n"
+        "**Advertencia de seguridad:** actualmente no exige autenticación; su "
+        "protección se sigue en el issue #14."
+    ),
+    responses={**PUBLIC_RESPONSES, **BAD_REQUEST},
+)
 def create_academic_year(payload: AcademicYearCreate):
-    """
-    Crea un nuevo año académico.
-    Genera el nombre automáticamente: 'Año escolar [init-year]-[end-year]'.
-    Calcula isCurrent si la fecha actual está entre el inicio y el cierre del año.
-    No requiere protección con JWT.
+    """Crea un nuevo año académico y calcula si es el período vigente.
+
+    Multi-tenancy:
+        Entidad global: los años académicos son compartidos por todas las escuelas.
+
+    RBAC:
+        Sin gate de rol. Pendiente de restringir a admin_sistema (issue #14).
+
+    Raises:
+        HTTPException(400): Si la fecha de inicio no es anterior a la de cierre.
+        HTTPException(500): Si la inserción falla o no devuelve la fila creada.
     """
     if payload.start_date >= payload.end_date:
         raise HTTPException(status_code=400, detail="La fecha de inicio debe ser menor a la fecha de cierre.")
@@ -40,13 +65,32 @@ def create_academic_year(payload: AcademicYearCreate):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al crear el año académico: {str(e)}")
 
-@router.patch("/sync-current", response_model=APIResponse[dict])
+# TODO(GH-14): esta ruta muta el eje temporal del sistema y hoy no exige token.
+# Queda sin marcador # PUBLIC_ROUTE a propósito: su exposición es un hallazgo de
+# seguridad abierto, no una decisión de diseño.
+@router.patch(
+    "/sync-current",
+    response_model=APIResponse[dict],
+    summary="Sincronizar el año académico vigente",
+    description=(
+        "Recalcula el campo 'is_current' de todos los años académicos contra la "
+        "fecha de hoy y actualiza solo aquellos cuyo estado haya cambiado.\n\n"
+        "**Advertencia de seguridad:** actualmente no exige autenticación; su "
+        "protección se sigue en el issue #14."
+    ),
+    responses=PUBLIC_RESPONSES,
+)
 def sync_current_academic_years():
-    """
-    Sincroniza el estado 'is_current' de todos los años académicos.
-    Si la fecha actual (hoy) se encuentra dentro del rango de start_date 
-    y end_date, pasa el is_current a True, de lo contrario pasa a False.
-    No requiere JWT.
+    """Recalcula qué año académico está vigente según la fecha de hoy.
+
+    Multi-tenancy:
+        Entidad global: afecta a todas las escuelas por igual.
+
+    RBAC:
+        Sin gate de rol. Pendiente de restringir a admin_sistema (issue #14).
+
+    Raises:
+        HTTPException(500): Si falla la consulta o la actualización en la base.
     """
     current_date = date.today()
     current_date_str = current_date.isoformat()

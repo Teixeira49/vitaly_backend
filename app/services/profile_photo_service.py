@@ -33,12 +33,30 @@ def read_upload_capped(stream: BinaryIO) -> bytes:
 
     El byte adicional basta para detectar un archivo demasiado grande sin cargar
     en memoria una subida de tamaño arbitrario.
+
+    Args:
+        stream: Flujo binario de la subida (``UploadFile.file``).
+
+    Returns:
+        bytes: Contenido leído, de a lo sumo ``MAX_PROFILE_PHOTO_BYTES + 1`` bytes.
+        Que supere el máximo es la señal de que el archivo es demasiado grande.
     """
     return stream.read(MAX_PROFILE_PHOTO_BYTES + 1)
 
 
 def detect_image_type(file_bytes: bytes) -> Optional[str]:
-    """Retorna el tipo MIME canónico según los magic bytes, o None si no está soportado."""
+    """Retorna el tipo MIME canónico según los magic bytes, o None si no está soportado.
+
+    Inspecciona el contenido real del archivo en lugar de confiar en el
+    Content-Type declarado por el cliente.
+
+    Args:
+        file_bytes: Contenido binario completo del archivo.
+
+    Returns:
+        Optional[str]: ``image/jpeg``, ``image/png`` o ``image/webp``; ``None`` si
+        el contenido no corresponde a ninguno de los formatos soportados.
+    """
     if file_bytes.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
     if file_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -50,6 +68,16 @@ def detect_image_type(file_bytes: bytes) -> Optional[str]:
 
 def validate_profile_photo(file_bytes: bytes, content_type: str) -> str:
     """Valida una foto de perfil subida y retorna la extensión con la que se almacenará.
+
+    Args:
+        file_bytes: Contenido binario del archivo, ya leído con
+            :func:`read_upload_capped`.
+        content_type: Content-Type declarado por el cliente. Debe coincidir con
+            los magic bytes del contenido.
+
+    Returns:
+        str: Extensión canónica con la que se guardará el archivo (``jpg``,
+        ``png`` o ``webp``).
 
     Raises:
         HTTPException(400): Archivo vacío, archivo mayor a 5 MB, content type
@@ -89,6 +117,13 @@ def validate_profile_photo(file_bytes: bytes, content_type: str) -> str:
 def _get_current_photo_file_id(user_id: int) -> Optional[str]:
     """Obtiene el photo_file_id actual del usuario.
 
+    Args:
+        user_id: ID del usuario cuya foto se consulta.
+
+    Returns:
+        Optional[str]: ID del archivo en ImageKit, o ``None`` si el usuario no
+        existe o no tiene foto registrada.
+
     Raises:
         HTTPException(500): Si falla la consulta a la BD.
     """
@@ -117,6 +152,13 @@ def upload_profile_photo(user_id: int, file_bytes: bytes, content_type: str, fol
         - Si falla la actualización en la BD, se elimina el archivo recién subido a ImageKit.
         - Solo después de que la actualización en la BD tiene éxito se elimina el
           archivo anterior de ImageKit (best-effort).
+
+    Args:
+        user_id: ID del usuario dueño de la foto.
+        file_bytes: Contenido binario de la imagen ya leído de la subida.
+        content_type: Content-Type declarado por el cliente.
+        folder: Carpeta destino en ImageKit; depende del rol (ver
+            ``SCHOOL_ADMIN_PHOTO_FOLDER`` y ``DOCTOR_PHOTO_FOLDER``).
 
     Returns:
         dict: {'photo_url': <nueva URL pública>}
@@ -169,6 +211,9 @@ def upload_profile_photo(user_id: int, file_bytes: bytes, content_type: str, fol
 
 def delete_profile_photo(user_id: int) -> dict:
     """Limpia la foto de perfil del usuario en la BD y luego la elimina de ImageKit (best-effort).
+
+    Args:
+        user_id: ID del usuario cuya foto se desea eliminar.
 
     Returns:
         dict: {'photo_url': None}

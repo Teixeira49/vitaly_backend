@@ -1,3 +1,10 @@
+"""Operaciones globales del administrador de sistema.
+
+A diferencia del resto de servicios, este opera sin alcance de escuela: el
+``admin_sistema`` audita y administra todas las instituciones, por lo que sus
+métodos reciben el ``school_id`` por parámetro en lugar de resolverlo del JWT.
+"""
+
 from fastapi import HTTPException, status
 from app.core.database import supabase
 from typing import List
@@ -8,7 +15,21 @@ from app.core.config import get_settings
 import datetime
 
 class AdminService:
+    """Gestión global de usuarios, escuelas, salones y estudiantes."""
+
     def get_users(self, page: int = 1, size: int = 20, pending_only: bool = False):
+        """Lista usuarios del sistema de forma paginada.
+
+        Args:
+            page: Número de página, comenzando en 1.
+            size: Cantidad de usuarios por página.
+            pending_only: Si es True, devuelve solo las cuentas sin aprobar
+                (``is_active=False``).
+
+        Returns:
+            dict: ``{"data": [...], "total": int, "page": int, "size": int}``.
+            La lista viene vacía si no hay usuarios que cumplan el filtro.
+        """
         query = supabase.table("user").select("id, email, name, lastname, birthday, is_active, is_deleted", count="exact")
         
         if pending_only:
@@ -30,6 +51,21 @@ class AdminService:
         }
 
     def approve_user(self, user_id: int, admin_id: int):
+        """Aprueba una cuenta pendiente, habilitándola para iniciar sesión.
+
+        Args:
+            user_id: ID del usuario a aprobar.
+            admin_id: ID del administrador que registra la aprobación. Hoy solo se
+                refleja en el mensaje de respuesta; queda pendiente su registro en
+                la bitácora de auditoría.
+
+        Returns:
+            str: Mensaje de confirmación de la aprobación.
+
+        Raises:
+            HTTPException: 404 si el usuario no existe.
+            HTTPException: 400 si el usuario está eliminado o ya estaba aprobado.
+        """
         # We verify if the user exists and is inactive
         user_response = supabase.table("user").select("is_active, is_deleted").eq("id", user_id).execute()
         
@@ -52,6 +88,19 @@ class AdminService:
         return f"Usuario {user_id} aprobado exitosamente por el administrador (admin_id: {admin_id})."
 
     def approve_users_bulk(self, user_ids: List[int], admin_id: int):
+        """Aprueba varias cuentas pendientes en una sola operación.
+
+        Solo afecta a los usuarios que estén inactivos y no eliminados; los IDs
+        inexistentes o ya aprobados se ignoran silenciosamente.
+
+        Args:
+            user_ids: IDs de los usuarios a aprobar.
+            admin_id: ID del administrador que registra las aprobaciones.
+
+        Returns:
+            str: Mensaje indicando cuántas cuentas se aprobaron, o que no hubo
+            ninguna por aprobar.
+        """
         # We update active status for all provided IDs where is_active is false and is_deleted is false
         # The Supabase 'in_' method supports arrays
         results = (
@@ -71,6 +120,22 @@ class AdminService:
         return f"Se han aprobado exitosamente {updated_count} usuarios por el administrador (admin_id: {admin_id})."
 
     def create_school(self, payload: SchoolCreate):
+        """Registra una nueva escuela en el sistema.
+
+        Valida que el año de fundación sea plausible y que no exista otra escuela
+        con el mismo RIF ni con el mismo nombre dentro del mismo estado.
+
+        Args:
+            payload: Datos de la escuela a registrar.
+
+        Returns:
+            str: Mensaje de confirmación con el ID asignado a la escuela.
+
+        Raises:
+            HTTPException: 400 si el año de fundación es negativo o futuro, si el
+                RIF ya existe, o si el par nombre+estado está duplicado.
+            HTTPException: 500 si la inserción no devuelve la fila creada.
+        """
         current_year = datetime.datetime.now().year
         
         if payload.year_foundation < 0:
@@ -107,6 +172,21 @@ class AdminService:
         return f"Escuela '{payload.name}' registrada exitosamente con el ID {result.data[0]['sch_id']}."
 
     def get_user_details(self, user_id: int):
+        """Devuelve los datos de un usuario junto con el detalle propio de su rol.
+
+        Según el rol, enriquece la respuesta con la fila de ``doctor``, ``parent``,
+        ``school_administrator`` o ``system_administrator``.
+
+        Args:
+            user_id: ID del usuario a consultar.
+
+        Returns:
+            dict: ``{"user": dict, "role": str, "details": dict}``. ``details`` es
+            un dict vacío si el rol no tiene perfil asociado.
+
+        Raises:
+            HTTPException: 404 si el usuario no existe.
+        """
         user_response = supabase.table("user").select("id, email, name, lastname, birthday, is_active, is_deleted").eq("id", user_id).execute()
         if not user_response.data:
             raise HTTPException(status_code=404, detail="Usuario no encontrado")
@@ -137,6 +217,25 @@ class AdminService:
         }
 
     def toggle_user_status(self, user_id: int, request_admin_id: int):
+        """Alterna el estado activo/inactivo de un usuario.
+
+        Incorpora dos salvaguardas: un administrador no puede deshabilitarse a sí
+        mismo, ni alterar a otro ``admin_sistema`` de nivel de privilegio igual o
+        superior al suyo.
+
+        Args:
+            user_id: ID del usuario cuyo estado se desea alternar.
+            request_admin_id: ID del administrador que solicita el cambio.
+
+        Returns:
+            str: Mensaje indicando el nuevo estado del usuario.
+
+        Raises:
+            HTTPException: 400 si el administrador intenta deshabilitarse a sí mismo.
+            HTTPException: 404 si el usuario objetivo no existe.
+            HTTPException: 403 si el objetivo es un admin_sistema de nivel igual o
+                superior al solicitante.
+        """
         if user_id == request_admin_id:
             raise HTTPException(status_code=400, detail="No puedes deshabilitarte a ti mismo.")
             
@@ -166,6 +265,24 @@ class AdminService:
         return f"El estado del usuario {user_id} ha sido cambiado a {'Activo' if new_status else 'Inactivo'}."
 
     def create_classroom(self, payload: ClassroomCreate):
+        """Crea un salón para una escuela y un año académico concretos.
+
+        Valida la categoría y el nivel contra ``CLASSROOM_LEVEL_LIMITS``, comprueba
+        que existan la escuela y el año académico, y rechaza duplicados exactos
+        (misma escuela, año, categoría, nivel y sección).
+
+        Args:
+            payload: Datos del salón a crear.
+
+        Returns:
+            str: Mensaje de confirmación con el ID asignado al salón.
+
+        Raises:
+            HTTPException: 400 si la categoría es desconocida, el nivel queda fuera
+                del rango de su categoría, o el salón ya existe.
+            HTTPException: 404 si la escuela o el año académico no existen.
+            HTTPException: 500 si la inserción no devuelve la fila creada.
+        """
         settings = get_settings()
         level_limits = settings.CLASSROOM_LEVEL_LIMITS
 
@@ -232,6 +349,19 @@ class AdminService:
         return f"Salón de clase creado exitosamente con ID {new_id} (Nivel {payload.level}{section_str})."
 
     def create_student(self, payload: StudentCreate):
+        """Registra un estudiante en el sistema, sin inscribirlo aún en un salón.
+
+        Args:
+            payload: Datos del estudiante a registrar. ``identity_number`` es
+                opcional, pero debe ser único entre los estudiantes no eliminados.
+
+        Returns:
+            str: Mensaje de confirmación con el ID asignado al estudiante.
+
+        Raises:
+            HTTPException: 400 si la cédula ya pertenece a otro estudiante activo.
+            HTTPException: 500 si la inserción no devuelve la fila creada.
+        """
         # Validar CI duplicada solo si fue proporcionada
         if payload.identity_number is not None:
             identity_number = payload.identity_number.strip()
@@ -261,6 +391,23 @@ class AdminService:
         return f"Estudiante '{payload.name} {payload.lastname}' registrado exitosamente con ID {new_id}."
 
     def update_student(self, student_id: int, payload: StudentUpdate):
+        """Actualiza los datos de un estudiante existente.
+
+        Solo aplica los campos efectivamente enviados. ``is_active`` e
+        ``is_deleted`` no son modificables por esta vía.
+
+        Args:
+            student_id: ID del estudiante a actualizar.
+            payload: Campos a modificar; los omitidos conservan su valor.
+
+        Returns:
+            str: Mensaje de confirmación de la actualización.
+
+        Raises:
+            HTTPException: 404 si el estudiante no existe.
+            HTTPException: 400 si el estudiante está eliminado, si la nueva cédula
+                ya pertenece a otro estudiante activo, o si no se envió ningún campo.
+        """
         # 1. Verificar que el estudiante existe y no está eliminado
         student_check = supabase.table("student").select("id, identity_number, is_deleted").eq("id", student_id).execute()
         if not student_check.data:
@@ -312,6 +459,23 @@ class AdminService:
         return f"Estudiante con ID {student_id} actualizado exitosamente."
 
     def register_student_to_classroom(self, payload: ClassroomRegistrationCreate):
+        """Inscribe un estudiante en un salón.
+
+        Comprueba que el salón esté activo, que pertenezca al año académico
+        indicado y que el estudiante no esté ya inscrito en él.
+
+        Args:
+            payload: Estudiante, salón, año académico y estado de la inscripción.
+
+        Returns:
+            str: Mensaje de confirmación de la vinculación.
+
+        Raises:
+            HTTPException: 404 si el salón no existe o está eliminado.
+            HTTPException: 400 si el salón no pertenece al año académico indicado,
+                o si el estudiante ya está inscrito en ese salón.
+            HTTPException: 500 si la inserción no devuelve la fila creada.
+        """
         # 1. Validar que la clase existe y pertenece al año académico solicitado
         classroom_check = supabase.table("classroom").select("id, academic_year_id").eq("id", payload.classroom_id).eq("is_deleted", False).execute()
         if not classroom_check.data:
@@ -350,6 +514,20 @@ class AdminService:
         return f"Estudiante {payload.student_id} vinculado exitosamente al salón {payload.classroom_id}."
 
     def bulk_register_students_to_classroom(self, payload: BulkClassroomRegistrationCreate):
+        """Inscribe varios estudiantes en un mismo salón, omitiendo los ya inscritos.
+
+        Args:
+            payload: Lista de estudiantes, salón, año académico y estado.
+
+        Returns:
+            str: Mensaje indicando cuántos estudiantes se vincularon, o que no había
+            vinculaciones nuevas por realizar.
+
+        Raises:
+            HTTPException: 404 si el salón no existe o está eliminado.
+            HTTPException: 400 si el salón no pertenece al año académico indicado.
+            HTTPException: 500 si la inserción masiva no devuelve filas.
+        """
         # 1. Validar salón y año académico
         classroom_check = supabase.table("classroom").select("id, academic_year_id").eq("id", payload.classroom_id).eq("is_deleted", False).execute()
         if not classroom_check.data:
@@ -395,6 +573,20 @@ class AdminService:
     # ──────────────────────────────────────────────────────────
 
     def get_schools(self, page: int, size: int):
+        """Lista las escuelas no eliminadas del sistema de forma paginada.
+
+        Args:
+            page: Número de página, comenzando en 1.
+            size: Cantidad de escuelas por página.
+
+        Returns:
+            dict: ``{"data": [...], "total": int, "page": int, "size": int}``.
+
+        Raises:
+            HTTPException: 404 si no hay escuelas registrados. Comportamiento legado
+                contrario al estándar REST del proyecto; su corrección se sigue en
+                el issue #15.
+        """
         offset = (page - 1) * size
         count_res = supabase.table("school").select("sch_id", count="exact").eq("is_deleted", False).execute()
         total = count_res.count or 0
@@ -410,6 +602,17 @@ class AdminService:
         return {"data": rows.data, "total": total, "page": page, "size": size}
 
     def get_school_detail(self, school_id: int):
+        """Devuelve los datos completos de una escuela.
+
+        Args:
+            school_id: ID de la escuela a consultar.
+
+        Returns:
+            dict: Fila de la escuela, incluidos ``is_active`` e ``is_deleted``.
+
+        Raises:
+            HTTPException: 404 si no existe ninguna escuela con ese ID.
+        """
         rows = (
             supabase.table("school")
             .select("sch_id, name, year_foundation, rif, address, state, school_type, is_active, is_deleted")
@@ -425,7 +628,15 @@ class AdminService:
     # ──────────────────────────────────────────────────────────
 
     def _enrich_classroom(self, classroom: dict) -> dict:
-        """Añade el año académico y la escuela al dict de un salón."""
+        """Añade el año académico y la escuela al dict de un salón.
+
+        Args:
+            classroom: Fila del salón. Debe traer ``academic_year_id`` y ``school_id``.
+
+        Returns:
+            dict: El mismo dict con las claves ``academic_year`` y ``school``
+            añadidas, en ``None`` si la relación no se pudo resolver.
+        """
         # Academic year
         ay_res = (
             supabase.table("academic_year")
@@ -446,6 +657,21 @@ class AdminService:
         return classroom
 
     def get_classrooms(self, page: int, size: int):
+        """Lista los salones no eliminados del sistema de forma paginada.
+
+        Args:
+            page: Número de página, comenzando en 1.
+            size: Cantidad de salones por página.
+
+        Returns:
+            dict: ``{"data": [...], "total": int, "page": int, "size": int}``. Cada salón viene
+            enriquecido con su año académico y su escuela.
+
+        Raises:
+            HTTPException: 404 si no hay salones registrados. Comportamiento legado
+                contrario al estándar REST del proyecto; su corrección se sigue en
+                el issue #15.
+        """
         offset = (page - 1) * size
         count_res = supabase.table("classroom").select("id", count="exact").eq("is_deleted", False).execute()
         total = count_res.count or 0
@@ -462,6 +688,17 @@ class AdminService:
         return {"data": enriched, "total": total, "page": page, "size": size}
 
     def get_classroom_detail(self, classroom_id: int):
+        """Devuelve un salón con su año académico y su escuela.
+
+        Args:
+            classroom_id: ID del salón a consultar.
+
+        Returns:
+            dict: Fila del salón enriquecida con ``academic_year`` y ``school``.
+
+        Raises:
+            HTTPException: 404 si no existe ningún salón con ese ID.
+        """
         rows = (
             supabase.table("classroom")
             .select("id, school_id, academic_year_id, category, level, section, is_deleted")
@@ -477,7 +714,18 @@ class AdminService:
     # ──────────────────────────────────────────────────────────
 
     def _enrich_student(self, student: dict) -> dict:
-        """Añade la escuela y salón al dict de un estudiante via classroom_registration."""
+        """Añade la escuela y el salón al dict de un estudiante.
+
+        La relación es indirecta: toma la inscripción más reciente del estudiante en
+        ``classroom_registration`` y desde ella resuelve el salón y su escuela.
+
+        Args:
+            student: Fila del estudiante. Debe traer la clave ``id``.
+
+        Returns:
+            dict: El mismo dict con las claves ``school`` y ``classroom`` añadidas,
+            en ``None`` si el estudiante no tiene inscripciones.
+        """
         registration = (
             supabase.table("classroom_registration")
             .select("classroom_id")
@@ -516,6 +764,21 @@ class AdminService:
         return student
 
     def get_students(self, page: int, size: int):
+        """Lista los estudiantes no eliminados del sistema de forma paginada.
+
+        Args:
+            page: Número de página, comenzando en 1.
+            size: Cantidad de estudiantes por página.
+
+        Returns:
+            dict: ``{"data": [...], "total": int, "page": int, "size": int}``. Cada estudiante viene
+            enriquecido con su escuela y su salón actual.
+
+        Raises:
+            HTTPException: 404 si no hay estudiantes registrados. Comportamiento legado
+                contrario al estándar REST del proyecto; su corrección se sigue en
+                el issue #15.
+        """
         offset = (page - 1) * size
         count_res = supabase.table("student").select("id", count="exact").eq("is_deleted", False).execute()
         total = count_res.count or 0
@@ -532,6 +795,17 @@ class AdminService:
         return {"data": enriched, "total": total, "page": page, "size": size}
 
     def get_student_detail(self, student_id: int):
+        """Devuelve un estudiante con su escuela y su salón actual.
+
+        Args:
+            student_id: ID del estudiante a consultar.
+
+        Returns:
+            dict: Fila del estudiante enriquecida con ``school`` y ``classroom``.
+
+        Raises:
+            HTTPException: 404 si no existe ningún estudiante con ese ID.
+        """
         rows = (
             supabase.table("student")
             .select("id, name, lastname, birthday, gender, blood_type, identity_number, is_active, is_deleted")
@@ -542,4 +816,5 @@ class AdminService:
             raise HTTPException(status_code=404, detail=f"No existe ningún estudiante con ID {student_id}.")
         return self._enrich_student(rows.data[0])
 
+#: Instancia compartida del servicio, importada por los endpoints de admin.
 admin_service = AdminService()

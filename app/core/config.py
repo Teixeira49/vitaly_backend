@@ -1,4 +1,5 @@
-import os
+"""Configuración de la aplicación leída del entorno (.env)."""
+
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 from typing import Dict, Optional
@@ -36,4 +37,16 @@ class Settings(BaseSettings):
 
 @lru_cache()
 def get_settings() -> Settings:
+    """Devuelve la configuración de la aplicación, cacheada para todo el proceso.
+
+    El decorador ``lru_cache`` garantiza que el ``.env`` se lea una sola vez y que
+    todos los módulos compartan la misma instancia de :class:`Settings`.
+
+    Returns:
+        Settings: Configuración validada de la aplicación.
+
+    Raises:
+        pydantic_settings.SettingsError: Si falta alguna variable obligatoria
+            (``SUPABASE_URL``, ``SUPABASE_KEY``) en el entorno o el ``.env``.
+    """
     return Settings()

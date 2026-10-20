@@ -1,16 +1,34 @@
+"""Servicio del rol representante: vinculación automática con sus estudiantes."""
+
 from fastapi import HTTPException, status
 from app.core.database import supabase
 from typing import List, Optional
 
 
 class ParentService:
-    def link_students_by_identity(self, user_id: int, identity_number: str) -> dict:
-        """
-        Busca en la tabla student los estudiantes cuyo campo authorization_number
-        contiene el identity_number del representante. Si hay coincidencias,
-        crea los registros correspondientes en student_representative.
+    """Vinculación entre representantes y los estudiantes que tienen autorizados."""
 
-        Retorna un resumen con los estudiantes vinculados.
+    def link_students_by_identity(self, user_id: int, identity_number: str) -> dict:
+        """Vincula a un representante con los estudiantes que lo autorizaron.
+
+        Busca los estudiantes cuyo campo ``authorization_number`` contiene el
+        documento de identidad del representante y crea la relación en
+        ``student_representative``. Se invoca durante el registro del representante
+        y es idempotente: las vinculaciones ya existentes se reportan aparte en
+        lugar de duplicarse.
+
+        Args:
+            user_id: ID del usuario representante (claim ``sub`` del JWT).
+            identity_number: Documento de identidad del representante, usado como
+                clave de búsqueda contra ``student.authorization_number``.
+
+        Returns:
+            dict: ``linked_students`` (vinculados ahora), ``already_linked`` (que ya
+            lo estaban) y ``message`` con el resumen. Si no hubo coincidencias,
+            ``linked_students`` viene vacío y no se incluye ``already_linked``.
+
+        Raises:
+            HTTPException: 404 si el usuario no tiene un perfil de representante.
         """
         # 1. Obtener el parent_id a partir del user_id
         parent_response = supabase.table("parent").select("id").eq("user_id", user_id).execute()
@@ -73,4 +91,5 @@ class ParentService:
         }
 
 
+#: Instancia compartida del servicio, importada por los endpoints de representante.
 parent_service = ParentService()
