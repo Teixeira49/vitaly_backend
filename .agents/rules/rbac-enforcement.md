@@ -21,15 +21,19 @@ alwaysApply: false
   - **Nota de legado:** algunas rutas existentes (ej. `app/api/v1/endpoints/catalogs.py`) colocan `# PUBLIC_ROUTE` dentro del docstring, y otras públicas no tienen marcador. Al tocar esos archivos, migra el marcador a un comentario encima de la función.
 
 ## 3. Directivas Prescriptivas
-1. **Gates disponibles (`app/api/deps.py`):** Todos dependen de `get_current_user_token` (decodifica el JWT HS256, rechaza tokens revocados con 401) y retornan el payload decodificado como `dict`. Cada gate de rol lanza 403 si el rol no coincide. El enum de roles es `UserRole` (`app/schemas/enums.py`).
+1. **Gates disponibles (`app/api/deps.py`):** Todos dependen (directa o indirectamente) de `get_current_user_token` (decodifica el JWT HS256, rechaza tokens revocados con 401) y retornan el payload decodificado como `dict`. Cada gate de rol lanza 403 si el rol no coincide. El enum de roles es `UserRole` (`app/schemas/enums.py`).
 
    | Dependencia                  | Permite                    |
    | ---------------------------- | -------------------------- |
    | `get_current_user_token`     | cualquier JWT válido y no revocado |
-   | `get_current_admin_sistema`  | `UserRole.ADMIN_SISTEMA`   |
-   | `get_current_admin_escuela`  | `UserRole.ADMIN_ESCUELA`   |
-   | `get_current_doctor`         | `UserRole.DOCTOR`          |
-   | `get_current_representante`  | `UserRole.REPRESENTANTE`   |
+   | `get_current_admin`          | token con `scope=admin` (portal de administración: `ADMIN_SISTEMA`) |
+   | `get_current_client`         | token con `scope=client` (portal de clientes: `ADMIN_ESCUELA`, `DOCTOR`, `REPRESENTANTE`) |
+   | `get_current_admin_sistema`  | `UserRole.ADMIN_SISTEMA` (sobre `get_current_admin`) |
+   | `get_current_admin_escuela`  | `UserRole.ADMIN_ESCUELA` (sobre `get_current_client`) |
+   | `get_current_doctor`         | `UserRole.DOCTOR` (sobre `get_current_client`) |
+   | `get_current_representante`  | `UserRole.REPRESENTANTE` (sobre `get_current_client`) |
+
+   **Procedencia del token (`scope`):** cada portal de login emite el claim `scope` (`TokenScope` en `app/schemas/enums.py`; roles por portal en `SCOPE_ROLES`): `POST /auth/admin/login` → `admin`, `POST /auth/login` → `client`. Los gates de procedencia responden 401 a un token sin `scope` (emitido antes de la separación: obliga a iniciar sesión de nuevo) y 403 a un token de otro portal. `get_current_user_token` a secas solo se usa donde cualquier sesión es válida (ej. `logout`).
 
 2. **Rutas Individuales:** Declara el gate más estrecho posible e inyecta el payload. En código nuevo usa la forma `Annotated` (recomendada por FastAPI): `admin_payload: Annotated[dict, Depends(get_current_admin_escuela)]`; la forma `admin_payload: dict = Depends(get_current_admin_escuela)` se tolera como legado. El id del usuario autenticado se obtiene con `int(admin_payload["sub"])`.
    - Los handlers y sus dependencias son `def` síncronos mientras el acceso a datos sea supabase-py (cliente bloqueante): FastAPI los ejecuta en un threadpool. No uses `async def` con llamadas bloqueantes, porque congela el event loop.

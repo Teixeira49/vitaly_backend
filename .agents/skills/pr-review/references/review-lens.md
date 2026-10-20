@@ -19,7 +19,7 @@ Is the change correct, maintainable, and safe to run?
 
 - Correctness: `None` handling, `response.data[0]` on an empty result, off-by-one in `.range()`, unhandled supabase `APIError`, race conditions.
 - Sync/async discipline (G8): Handlers and services calling supabase-py must be sync `def` (FastAPI threadpool). Flag `async def` with blocking I/O calls.
-- API contract & envelope (G3, G7): Endpoints must return `APIResponse[T]`. Schema changes must maintain contract parity with `../vitaly-care-for-families`.
+- API contract & envelope (G3, G7): Endpoints must return `APIResponse[T]`. Schema changes must maintain contract parity with `../vitaly_frontend/vitaly-care-for-families`.
 - Empty vs. missing (G4): Empty collections return 200 + `data=[]` (never 404). 404 is strictly for missing single resources.
 - Resource use: N+1 queries, unbounded loops, leaks, missing pagination.
 - Testing: new behavior without tests; regression risk in touched paths.

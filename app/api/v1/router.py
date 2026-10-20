@@ -4,6 +4,7 @@ from app.api.v1.endpoints import auth, admin, admin_school, catalogs, school, ac
 api_router = APIRouter()
 
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
+api_router.include_router(auth.admin_router, prefix="/auth/admin", tags=["Autenticación - Administración"])
 api_router.include_router(admin.router, prefix="/admin", tags=["Administrador de Sistema"])
 api_router.include_router(admin_school.router, prefix="/admin/schools", tags=["Administrador de Sistema - Feat. Escuela"])
 api_router.include_router(catalogs.router, prefix="/catalogs", tags=["Catálogos Públicos"])

@@ -89,10 +89,10 @@ A partir de la emisión del Issue #8, todo código nuevo o modificado debe incor
 ### 6. Ecosistema Multi-Repositorio (Frontend & Backend) — [`cross-repo-e2e.md`](rules/cross-repo-e2e.md)
 Vitaly opera con una arquitectura desacoplada de dos repositorios hermanos:
 - **Backend (Este repositorio):** API REST en FastAPI, cliente supabase-py, PostgreSQL/Supabase.
-- **Frontend (Repositorio hermano):** Ubicado de forma relativa en `../vitaly-care-for-families` (SPA en React 18 + TypeScript + Vite + Tailwind + TanStack Query).
+- **Frontend (Repositorio hermano):** Ubicado de forma relativa en `../vitaly_frontend/vitaly-care-for-families` (SPA en React 18 + TypeScript + Vite + Tailwind + TanStack Query).
 
 **Directivas para orquestación End-to-End (E2E):**
-1. **Resolución Relativa Estricta:** Resuelve siempre el repositorio hermano mediante `../vitaly-care-for-families` o `$(git rev-parse --show-toplevel)/../vitaly-care-for-families`. Queda **terminantemente prohibido** incluir rutas absolutas del entorno local del desarrollador (`/Users/...`, `C:\...`).
+1. **Resolución Relativa Estricta:** Resuelve siempre el repositorio hermano mediante `../vitaly_frontend/vitaly-care-for-families` o `$(git rev-parse --show-toplevel)/../vitaly_frontend/vitaly-care-for-families`. Queda **terminantemente prohibido** incluir rutas absolutas del entorno local del desarrollador (`/Users/...`, `C:\...`).
 2. **Autoridad de Esquemas:** El backend es la única fuente de la verdad para contratos de datos. Cualquier cambio en esquemas Pydantic (`*Read`, `*Create`) debe coordinarse con las interfaces TypeScript correspondientes en el frontend.
 3. **Independencia de Commits:** Cada repositorio gestiona su propio historial de Git. NUNCA mezcles cambios de ambos repositorios en un único commit.
 

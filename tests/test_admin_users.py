@@ -42,6 +42,7 @@ def sys_admin_payload(user_id: int = 1) -> dict:
         "sub": str(user_id),
         "email": "sysadmin@vitaly.com",
         "role": "admin_sistema",
+        "scope": "admin",
         "name": "Super Admin",
         "gender": "MASCULINO",
     }
@@ -52,6 +53,7 @@ def admin_school_payload(user_id: int = 2) -> dict:
         "sub": str(user_id),
         "email": "admin.escuela@vitaly.com",
         "role": "admin_escuela",
+        "scope": "client",
         "name": "Directora",
         "gender": "FEMENINO",
     }
@@ -62,6 +64,7 @@ def doctor_payload(user_id: int = 3) -> dict:
         "sub": str(user_id),
         "email": "doctor@vitaly.com",
         "role": "doctor",
+        "scope": "client",
         "name": "Dr. House",
         "gender": "MASCULINO",
     }
@@ -72,6 +75,7 @@ def parent_payload(user_id: int = 4) -> dict:
         "sub": str(user_id),
         "email": "parent@vitaly.com",
         "role": "representante",
+        "scope": "client",
         "name": "Madre",
         "gender": "FEMENINO",
     }
@@ -406,7 +410,7 @@ class TestAdminUsersRBAC:
         assert response.status_code == 403
         body = response.json()
         assert body["success"] is False
-        assert "Se requiere rol de admin_sistema" in body["message"]
+        assert "token emitido por el portal de administración" in body["message"]
 
     def test_get_users_forbidden_for_doctor(self, client):
         """Rol doctor intentando acceder -> 403 Forbidden."""
@@ -419,7 +423,7 @@ class TestAdminUsersRBAC:
         assert response.status_code == 403
         body = response.json()
         assert body["success"] is False
-        assert "Se requiere rol de admin_sistema" in body["message"]
+        assert "token emitido por el portal de administración" in body["message"]
 
     def test_get_users_forbidden_for_parent(self, client):
         """Rol representante intentando acceder -> 403 Forbidden."""
@@ -432,4 +436,4 @@ class TestAdminUsersRBAC:
         assert response.status_code == 403
         body = response.json()
         assert body["success"] is False
-        assert "Se requiere rol de admin_sistema" in body["message"]
+        assert "token emitido por el portal de administración" in body["message"]

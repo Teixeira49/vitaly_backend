@@ -29,7 +29,7 @@ Read the relevant rule before you act. Do not copy formats from memory.
 - In `manual` mode, write the draft only. Do not commit, push, or open a PR.
 - In `ask` mode, wait for the user's explicit written approval before `gh pr create`.
 - Do not add `Co-Authored-By` or AI attribution trailers.
-- Do not mix backend and frontend (`../vitaly-care-for-families`) changes in one commit or PR.
+- Do not mix backend and frontend (`../vitaly_frontend/vitaly-care-for-families`) changes in one commit or PR.
 - Do not write absolute local paths in branch names, commits, drafts, or PR bodies.
 - Follow the `git-safety` skill before any destructive git operation.
 

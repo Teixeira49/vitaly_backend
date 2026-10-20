@@ -150,5 +150,5 @@ Confirm ALL before reporting done:
 - [ ] Schemas `app/schemas/<feature>.py`: standard suffixes, `Field(description=...)`, no secrets in `*Read`.
 - [ ] Registration line added in `app/api/v1/router.py` with prefix + Spanish tag.
 - [ ] Tests written via `vitaly-feature-testing` (RBAC matrix, tenancy, empty table, 404).
-- [ ] Frontend DTO parity checked via `vitaly-contracts-parity` (`../vitaly-care-for-families`).
+- [ ] Frontend DTO parity checked via `vitaly-contracts-parity` (`../vitaly_frontend/vitaly-care-for-families`).
 - [ ] No new method added to `school_admin_service.py`.
