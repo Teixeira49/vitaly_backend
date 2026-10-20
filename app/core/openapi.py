@@ -3,7 +3,8 @@ from fastapi.responses import HTMLResponse
 
 # Definición de etiquetas para organizar la documentación
 tags_metadata = [
-    {"name": "auth", "description": "Portal de clientes: login de administradores de escuela, doctores y representantes, registro de roles y logout."},
+    {"name": "auth", "description": "Registro de roles, logout y el alias obsoleto `POST /auth/login`."},
+    {"name": "Autenticación - Clientes", "description": "Portal de clientes: login de administradores de escuela, doctores y representantes."},
     {"name": "Autenticación - Administración", "description": "Portal de administración: login exclusivo de administradores de sistema."},
     {"name": "Administrador de Sistema", "description": "Gestión global del sistema por superusuarios."},
     {"name": "Administrador de Sistema - Feat. Escuela", "description": "Gestión de escuelas por parte del administrador de sistema."},

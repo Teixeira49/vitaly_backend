@@ -27,7 +27,7 @@ Chain: `get_current_user_token` decodes the HS256 JWT and rejects revoked tokens
 401; the scope gate (`get_current_admin` / `get_current_client`) rejects a token without
 `scope` with 401 (issued before the portal split: forces a fresh login) and a token from the
 other portal with 403; the role gate raises 403. Each login portal stamps `scope`:
-`POST /auth/admin/login` → `admin`, `POST /auth/login` → `client` (`TokenScope` and
+`POST /auth/admin/login` → `admin`, `POST /auth/client/login` → `client` (deprecated alias `POST /auth/login` until removed; `TokenScope` and
 `SCOPE_ROLES` in `app/schemas/enums.py`). Payload claims: `sub` (user id as string), `role`,
 `scope`, `email`, `name`, plus role extras (`school` name for admin_escuela,
 `especially` for doctor, `type_representative` for representante). There is **no**
@@ -69,7 +69,7 @@ Inline role checks scatter authorization across handlers; adding a role then bec
 
 Mark every intentionally public handler with a `# PUBLIC_ROUTE` comment exactly above the
 function definition, i.e. above its decorator stack (as in the rule's example). Legitimately
-public today: `/auth/register-*`, `/auth/login`, `/auth/admin/login`, `/catalogs/*`, `GET /schools`, `/`, `/health`
+public today: `/auth/register-*`, `/auth/client/login` (and its deprecated alias `/auth/login`), `/auth/admin/login`, `/catalogs/*`, `GET /schools`, `/`, `/health`
 and `GET /health-visual` (`app/main.py:72`). Of these, `/`, `/health`, `/health-visual`
 and `school.py` have no marker at all (`catalogs.py` has it in the
 docstring): mark them before the guard test can go green.
