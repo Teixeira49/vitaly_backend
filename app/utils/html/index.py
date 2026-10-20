@@ -1,3 +1,4 @@
+"""Página HTML estática de bienvenida servida en la raíz (``GET /``)."""
 
 ROOT_HTML = """
 <!DOCTYPE html>

@@ -1,10 +1,14 @@
 from enum import Enum
 
+
 class UserRole(str, Enum):
+    """Roles del sistema. Determinan el gate `get_current_*` que protege cada ruta."""
+
     ADMIN_SISTEMA = "admin_sistema"
     ADMIN_ESCUELA = "admin_escuela"
     DOCTOR = "doctor"
     REPRESENTANTE = "representante"
+
 
 class TokenScope(str, Enum):
     """Procedencia de un JWT: el portal de login que lo emitió (claim `scope`)."""
@@ -18,10 +22,15 @@ SCOPE_ROLES: dict[TokenScope, frozenset[UserRole]] = {
 }
 
 class Gender(str, Enum):
+    """Género registrado de un estudiante."""
+
     MASCULINO = "MASCULINO"
     FEMENINO = "FEMENINO"
 
+
 class BloodType(str, Enum):
+    """Tipo de sangre del estudiante en notación ABO/Rh."""
+
     A_POS = "A+"
     A_NEG = "A-"
     B_POS = "B+"
