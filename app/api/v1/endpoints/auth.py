@@ -5,12 +5,14 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from app.api.deps import get_current_user_token, security
 from app.core.openapi_responses import BAD_REQUEST, PROTECTED_RESPONSES, PUBLIC_RESPONSES, error_response
-from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, ParentRegister, UserLogin, AdminLoginCreate, Token
+from app.schemas.user import SystemAdminRegister, SchoolAdminRegister, DoctorRegister, ParentRegister, ClientLoginCreate, AdminLoginCreate, Token
 from app.schemas.enums import TokenScope
 from app.schemas.responses import APIResponse
 from app.services.auth_service import auth_service
 
 router = APIRouter()
+# Portales de login: montados en /auth/client y /auth/admin, cada uno con su sección en Swagger/ReDoc.
+client_router = APIRouter()
 admin_router = APIRouter()
 
 # Errores comunes de ambos portales, con ejemplos del envelope estándar.
@@ -160,13 +162,14 @@ def register_parent(user_in: ParentRegister):
 @router.post(
     "/login",
     response_model=APIResponse[Token],
-    summary="Login del portal de clientes",
-    description="Autentica a administradores de escuela, doctores y representantes. "
-    "Un admin_sistema es rechazado con 403 y debe usar `POST /auth/admin/login`.",
+    summary="Login del portal de clientes (obsoleto)",
+    description="Alias obsoleto de `POST /auth/client/login`, con el mismo comportamiento. "
+    "Se retirará cuando el frontend consuma la nueva ruta.",
     responses=LOGIN_ERROR_RESPONSES,
+    deprecated=True,
 )
-def login(user_in: UserLogin):
-    """Autentica al usuario del portal de clientes y emite un JWT con scope=client.
+def login(user_in: ClientLoginCreate):
+    """Alias obsoleto de POST /api/v1/auth/client/login; delega en `client_login`.
 
     Multi-tenancy:
         El token no incluye school_id; cada servicio lo resuelve desde el claim sub.
@@ -181,8 +184,7 @@ def login(user_in: UserLogin):
             pertenece al portal de clientes.
         HTTPException(500): Si falla una operación interna del login.
     """
-    token_response = auth_service.authenticate_user(user_in, TokenScope.CLIENT)
-    return APIResponse(data=token_response, message="Login exitoso")
+    return client_login(user_in)
 
 
 @router.post(
@@ -218,12 +220,40 @@ def logout(
 
 
 # PUBLIC_ROUTE
+@client_router.post(
+    "/login",
+    response_model=APIResponse[Token],
+    summary="Login del portal de clientes",
+    description="Autentica a administradores de escuela, doctores y representantes. "
+    "Un admin_sistema es rechazado con 403 y debe usar `POST /auth/admin/login`.",
+    responses=LOGIN_ERROR_RESPONSES,
+)
+def client_login(user_in: ClientLoginCreate):
+    """Autentica al usuario del portal de clientes y emite un JWT con scope=client.
+
+    Multi-tenancy:
+        El token no incluye school_id; cada servicio lo resuelve desde el claim sub.
+
+    RBAC:
+        Ruta pública. Admite admin_escuela, doctor y representante; admin_sistema
+        debe utilizar POST /api/v1/auth/admin/login.
+
+    Raises:
+        HTTPException(401): Si las credenciales son incorrectas.
+        HTTPException(403): Si la cuenta está eliminada, inactiva o su rol no
+            pertenece al portal de clientes.
+        HTTPException(500): Si falla una operación interna del login.
+    """
+    token_response = auth_service.authenticate_user(user_in, TokenScope.CLIENT)
+    return APIResponse(data=token_response, message="Login exitoso")
+
+# PUBLIC_ROUTE
 @admin_router.post(
     "/login",
     response_model=APIResponse[Token],
     summary="Login del portal de administración",
     description="Autentica exclusivamente a administradores de sistema. Cualquier otro rol "
-    "es rechazado con 403 antes de emitir el token y debe usar `POST /auth/login`.",
+    "es rechazado con 403 antes de emitir el token y debe usar `POST /auth/client/login`.",
     responses=LOGIN_ERROR_RESPONSES,
 )
 def admin_login(user_in: AdminLoginCreate):
@@ -234,7 +264,7 @@ def admin_login(user_in: AdminLoginCreate):
 
     RBAC:
         Ruta pública. Solo admite admin_sistema; los demás roles utilizan
-        POST /api/v1/auth/login y son rechazados aquí antes de emitir el JWT.
+        POST /api/v1/auth/client/login y son rechazados aquí antes de emitir el JWT.
 
     Raises:
         HTTPException(401): Si las credenciales son incorrectas.

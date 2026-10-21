@@ -4,7 +4,8 @@ Tests for Auth endpoints and service layer:
   - POST /api/v1/auth/register-school-admin
   - POST /api/v1/auth/register-doctor
   - POST /api/v1/auth/register-parent
-  - POST /api/v1/auth/login        (portal de clientes, scope=client)
+  - POST /api/v1/auth/client/login (portal de clientes, scope=client)
+  - POST /api/v1/auth/login        (alias obsoleto del portal de clientes)
   - POST /api/v1/auth/admin/login  (portal de administración, scope=admin)
   - POST /api/v1/auth/logout
   - Gates de procedencia get_current_admin / get_current_client (claim `scope`)
@@ -453,7 +454,7 @@ class TestRegisterParent:
 
 
 # ──────────────────────────────────────────────────────────
-# 5. POST /login - Claims estrictos y reglas de autenticación
+# 5. POST /client/login - Claims estrictos y reglas de autenticación
 # ──────────────────────────────────────────────────────────
 
 class TestLogin:
@@ -523,7 +524,7 @@ class TestLogin:
             )
 
             payload = {"email": "admin.escuela@vitaly.com", "password": TEST_PASSWORD}
-            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+            response = client.post(f"{AUTH_BASE_URL}/client/login", json=payload)
 
         assert response.status_code == 200
         body = response.json()
@@ -560,7 +561,7 @@ class TestLogin:
             )
 
             payload = {"email": "doctor@vitaly.com", "password": TEST_PASSWORD}
-            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+            response = client.post(f"{AUTH_BASE_URL}/client/login", json=payload)
 
         assert response.status_code == 200
         body = response.json()
@@ -597,7 +598,7 @@ class TestLogin:
             )
 
             payload = {"email": "parent@vitaly.com", "password": TEST_PASSWORD}
-            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+            response = client.post(f"{AUTH_BASE_URL}/client/login", json=payload)
 
         assert response.status_code == 200
         body = response.json()
@@ -623,7 +624,7 @@ class TestLogin:
             route_tables(mock_sb, user=user_query)
 
             payload = {"email": "inactivo@vitaly.com", "password": TEST_PASSWORD}
-            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+            response = client.post(f"{AUTH_BASE_URL}/client/login", json=payload)
 
         assert response.status_code == 403
         body = response.json()
@@ -645,7 +646,7 @@ class TestLogin:
             route_tables(mock_sb, user=user_query)
 
             payload = {"email": "eliminado@vitaly.com", "password": TEST_PASSWORD}
-            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+            response = client.post(f"{AUTH_BASE_URL}/client/login", json=payload)
 
         assert response.status_code == 403
         body = response.json()
@@ -667,7 +668,7 @@ class TestLogin:
             route_tables(mock_sb, user=user_query)
 
             payload = {"email": "user@vitaly.com", "password": "WrongPassword!"}
-            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+            response = client.post(f"{AUTH_BASE_URL}/client/login", json=payload)
 
         assert response.status_code == 401
         body = response.json()
@@ -682,7 +683,7 @@ class TestLogin:
             route_tables(mock_sb, user=user_query)
 
             payload = {"email": "noexiste@vitaly.com", "password": TEST_PASSWORD}
-            response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+            response = client.post(f"{AUTH_BASE_URL}/client/login", json=payload)
 
         assert response.status_code == 401
         body = response.json()
@@ -692,7 +693,7 @@ class TestLogin:
     def test_login_invalid_email_format_returns_422(self, client):
         """Formato de correo no válido -> 422 Unprocessable Entity."""
         payload = {"email": "not-an-email", "password": TEST_PASSWORD}
-        response = client.post(f"{AUTH_BASE_URL}/login", json=payload)
+        response = client.post(f"{AUTH_BASE_URL}/client/login", json=payload)
         assert response.status_code == 422
 
 
@@ -723,7 +724,7 @@ class TestLoginPortalSeparation:
                 user_roles=make_query([{"role": "admin_sistema"}]),
             )
             response = client.post(
-                f"{AUTH_BASE_URL}/login",
+                f"{AUTH_BASE_URL}/client/login",
                 json={"email": "cuenta@vitaly.com", "password": TEST_PASSWORD},
             )
 
@@ -761,7 +762,7 @@ class TestLoginPortalSeparation:
         with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
             route_tables(mock_sb, user=make_query([active_user()]), user_roles=make_query([]))
             response = client.post(
-                f"{AUTH_BASE_URL}/login",
+                f"{AUTH_BASE_URL}/client/login",
                 json={"email": "cuenta@vitaly.com", "password": TEST_PASSWORD},
             )
 
@@ -877,6 +878,59 @@ class TestLoginUnexpectedErrors:
         assert body["message"] == "No se pudo iniciar sesión. Inténtalo de nuevo más tarde."
         assert body["data"] is None
         assert body["errors"] is None
+
+
+# ──────────────────────────────────────────────────────────
+# 5.1.1 Alias obsoleto POST /login (transición hacia /client/login)
+# ──────────────────────────────────────────────────────────
+
+class TestDeprecatedClientLoginAlias:
+    def test_alias_issues_client_scope_token(self, client):
+        """El alias /login se comporta como /client/login: 200 y JWT con scope=client."""
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb:
+            route_tables(
+                mock_sb,
+                user=make_query([active_user()]),
+                user_roles=make_query([{"role": "representante"}]),
+                parent=make_query([{"type_representative": "Madre"}]),
+            )
+            response = client.post(
+                f"{AUTH_BASE_URL}/login",
+                json={"email": "cuenta@vitaly.com", "password": TEST_PASSWORD},
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["message"] == "Login exitoso"
+        claims = jwt.decode(body["data"]["access_token"], settings.SECRET_KEY, algorithms=[ALGORITHM])
+        assert claims["role"] == "representante"
+        assert claims["scope"] == "client"
+
+    def test_alias_rejects_system_admin_with_403(self, client):
+        """El alias conserva el rechazo de admin_sistema antes de emitir el JWT."""
+        with patch(f"{SERVICE_MODULE}.supabase") as mock_sb, \
+             patch(f"{SERVICE_MODULE}.create_access_token") as mock_token:
+            route_tables(
+                mock_sb,
+                user=make_query([active_user()]),
+                user_roles=make_query([{"role": "admin_sistema"}]),
+            )
+            response = client.post(
+                f"{AUTH_BASE_URL}/login",
+                json={"email": "cuenta@vitaly.com", "password": TEST_PASSWORD},
+            )
+
+        assert response.status_code == 403
+        assert response.json()["success"] is False
+        mock_token.assert_not_called()
+
+    def test_openapi_marks_only_the_alias_as_deprecated(self, client):
+        """En /docs, /login aparece obsoleto y /client/login no."""
+        paths = client.get("/openapi.json").json()["paths"]
+        assert paths[f"{AUTH_BASE_URL}/login"]["post"]["deprecated"] is True
+        assert paths[f"{AUTH_BASE_URL}/client/login"]["post"].get("deprecated", False) is False
+        assert paths[f"{AUTH_BASE_URL}/client/login"]["post"]["tags"] == ["Autenticación - Clientes"]
 
 
 # ──────────────────────────────────────────────────────────
