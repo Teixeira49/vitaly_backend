@@ -1,14 +1,179 @@
-"""Endpoints del rol representante."""
+"""Endpoints del rol representante: perfil propio, foto de perfil y vinculación de estudiantes."""
 
-from fastapi import APIRouter, Depends
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, File, UploadFile
 
 from app.api.deps import get_current_representante
-from app.core.openapi_responses import PROTECTED_RESPONSES
+from app.core.openapi_responses import (
+    BAD_REQUEST,
+    PROTECTED_DETAIL_RESPONSES,
+    PROTECTED_RESPONSES,
+    error_response,
+)
+from app.schemas.parent import ParentProfileRead, ParentProfileUpdate
 from app.schemas.responses import APIResponse
+from app.schemas.user import UserPhotoResponse
 from app.services.parent_service import parent_service
+from app.services import profile_photo_service
 from app.core.database import supabase
 
 router = APIRouter()
+
+RepresentantePayload = Annotated[dict, Depends(get_current_representante)]
+
+
+# ──────────────────────────────────────────────────────────
+# Profile - Mi Perfil de Representante
+# ──────────────────────────────────────────────────────────
+
+@router.get(
+    "/profile",
+    response_model=APIResponse[ParentProfileRead],
+    summary="Obtener perfil del representante",
+    description=(
+        "Retorna el perfil del representante autenticado: datos personales, foto de "
+        "perfil (photo_url), ocupación y parentesco. Nunca incluye la contraseña ni el "
+        "identificador interno de la foto."
+    ),
+    responses=PROTECTED_DETAIL_RESPONSES,
+)
+def get_my_profile(parent_payload: RepresentantePayload):
+    """Retorna el perfil del representante autenticado.
+
+    Multi-tenancy:
+        No aplica alcance de escuela: el usuario se deriva exclusivamente del token
+        JWT (parent_payload['sub']) y no se aceptan identificadores del cliente.
+
+    RBAC:
+        Requiere rol representante autenticado mediante Bearer token.
+
+    Raises:
+        HTTPException(401): Si el token es inválido, expiró o fue revocado.
+        HTTPException(403): Si el rol no es representante.
+        HTTPException(404): Si el usuario no tiene un perfil de representante.
+    """
+    user_id = int(parent_payload["sub"])
+    result = parent_service.get_my_profile(user_id=user_id)
+    return APIResponse(
+        data=ParentProfileRead(**result),
+        message="Perfil de representante obtenido exitosamente"
+    )
+
+
+@router.put(
+    "/profile",
+    response_model=APIResponse[ParentProfileRead],
+    summary="Actualizar perfil del representante",
+    description=(
+        "Actualiza solo los campos enviados del representante autenticado: nombre, "
+        "apellido, fecha de nacimiento, género, dirección, ocupación y parentesco. "
+        "Email, rol, contraseña y documento de identidad no se pueden cambiar por esta "
+        "vía (un campo no permitido responde 422). La foto se gestiona en /profile/photo."
+    ),
+    responses={**PROTECTED_DETAIL_RESPONSES, **BAD_REQUEST},
+)
+def update_my_profile(payload: ParentProfileUpdate, parent_payload: RepresentantePayload):
+    """Actualiza la información personal del representante autenticado.
+
+    Multi-tenancy:
+        No aplica alcance de escuela: el usuario afectado se deriva exclusivamente
+        del token JWT (parent_payload['sub']). No acepta identificadores del cuerpo.
+
+    RBAC:
+        Requiere rol representante autenticado mediante Bearer token.
+
+    Raises:
+        HTTPException(400): Si no se pudo actualizar el perfil.
+        HTTPException(401): Si el token es inválido, expiró o fue revocado.
+        HTTPException(403): Si el rol no es representante.
+        HTTPException(404): Si el usuario no tiene un perfil de representante.
+    """
+    user_id = int(parent_payload["sub"])
+    result = parent_service.update_my_profile(
+        user_id=user_id,
+        payload=payload.model_dump(exclude_unset=True, mode="json"),
+    )
+    return APIResponse(
+        data=ParentProfileRead(**result),
+        message="Perfil de representante actualizado exitosamente"
+    )
+
+
+@router.post(
+    "/profile/photo",
+    response_model=APIResponse[UserPhotoResponse],
+    summary="Subir foto de perfil del representante",
+    description="Sube una imagen al bucket de ImageKit.io y actualiza photo_url en el perfil del representante autenticado.",
+    responses={
+        **PROTECTED_RESPONSES,
+        **BAD_REQUEST,
+        **error_response(502, "Falló la subida del archivo a ImageKit.", "No se pudo subir la imagen al proveedor de almacenamiento."),
+    },
+)
+def upload_my_profile_photo(
+    file: Annotated[UploadFile, File(description="Archivo de imagen (JPEG, PNG o WebP, máx. 5MB)")],
+    parent_payload: RepresentantePayload,
+):
+    """Sube y actualiza la foto de perfil del representante autenticado.
+
+    Multi-tenancy:
+        No aplica alcance de escuela: el usuario afectado se deriva exclusivamente
+        del token JWT (parent_payload['sub']).
+
+    RBAC:
+        Requiere rol representante autenticado mediante Bearer token.
+
+    Raises:
+        HTTPException(400): Si el archivo no es una imagen válida o supera los 5 MB.
+        HTTPException(401): Si el token es inválido, expiró o fue revocado.
+        HTTPException(403): Si el rol no es representante.
+        HTTPException(500): Si ImageKit no está configurado en el servidor.
+        HTTPException(502): Si la subida al bucket de ImageKit falla.
+    """
+    user_id = int(parent_payload["sub"])
+    # Plain `def` endpoint: FastAPI runs it in the threadpool, so the blocking
+    # ImageKit/Supabase calls never block the event loop.
+    file_bytes = profile_photo_service.read_upload_capped(file.file)
+    result = parent_service.upload_my_profile_photo(
+        user_id=user_id,
+        file_bytes=file_bytes,
+        content_type=file.content_type or ""
+    )
+    return APIResponse(
+        data=UserPhotoResponse(**result),
+        message="Foto de perfil de representante subida y actualizada exitosamente"
+    )
+
+
+@router.delete(
+    "/profile/photo",
+    response_model=APIResponse[UserPhotoResponse],
+    summary="Eliminar foto de perfil del representante",
+    description="Elimina la foto de perfil del representante autenticado, estableciendo photo_url en null.",
+    responses={**PROTECTED_RESPONSES, **BAD_REQUEST},
+)
+def delete_my_profile_photo(parent_payload: RepresentantePayload):
+    """Elimina la foto de perfil del representante autenticado.
+
+    Multi-tenancy:
+        No aplica alcance de escuela: el usuario afectado se deriva exclusivamente
+        del token JWT (parent_payload['sub']).
+
+    RBAC:
+        Requiere rol representante autenticado mediante Bearer token.
+
+    Raises:
+        HTTPException(400): Si no se pudo actualizar el registro en la base de datos.
+        HTTPException(401): Si el token es inválido, expiró o fue revocado.
+        HTTPException(403): Si el rol no es representante.
+    """
+    user_id = int(parent_payload["sub"])
+    result = parent_service.delete_my_profile_photo(user_id=user_id)
+    return APIResponse(
+        data=UserPhotoResponse(**result),
+        message="Foto de perfil de representante eliminada exitosamente"
+    )
 
 
 # ──────────────────────────────────────────────────────────
