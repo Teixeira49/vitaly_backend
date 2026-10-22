@@ -1,8 +1,8 @@
 """Ciclo de vida compartido de la foto de perfil (validación, almacenamiento en ImageKit y sincronización con la BD).
 
-Lo usan todos los roles que tienen foto de perfil (médico, administrador de escuela)
-para que las reglas de validación y las garantías de consistencia entre ImageKit
-y la BD vivan en un solo lugar.
+Lo usan todos los roles que tienen foto de perfil (médico, administrador de escuela
+y representante) para que las reglas de validación y las garantías de consistencia
+entre ImageKit y la BD vivan en un solo lugar.
 """
 import logging
 from typing import BinaryIO, Optional
@@ -26,6 +26,7 @@ _CONTENT_TYPE_ALIASES = {"image/jpg": "image/jpeg"}
 
 SCHOOL_ADMIN_PHOTO_FOLDER = "/vitaly/profiles"
 DOCTOR_PHOTO_FOLDER = "/vitaly/profiles/doctors"
+PARENT_PHOTO_FOLDER = "/vitaly/profiles/parents"
 
 
 def read_upload_capped(stream: BinaryIO) -> bytes:
@@ -158,7 +159,8 @@ def upload_profile_photo(user_id: int, file_bytes: bytes, content_type: str, fol
         file_bytes: Contenido binario de la imagen ya leído de la subida.
         content_type: Content-Type declarado por el cliente.
         folder: Carpeta destino en ImageKit; depende del rol (ver
-            ``SCHOOL_ADMIN_PHOTO_FOLDER`` y ``DOCTOR_PHOTO_FOLDER``).
+            ``SCHOOL_ADMIN_PHOTO_FOLDER``, ``DOCTOR_PHOTO_FOLDER`` y
+            ``PARENT_PHOTO_FOLDER``).
 
     Returns:
         dict: {'photo_url': <nueva URL pública>}
