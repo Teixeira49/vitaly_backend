@@ -1262,6 +1262,19 @@ class SchoolAdminService:
         """
         Obtiene el detalle completo de un médico para el administrador de escuela.
         Incluye información profesional y personal del usuario vinculado.
+
+        Args:
+            user_id: ID del administrador de escuela autenticado (claim 'sub').
+            doctor_id: ID del médico ('doctor.doc_id').
+
+        Returns:
+            dict: 'doctor_info' (datos profesionales y estatus en la escuela) y
+            'user_info' (datos personales, 'photo_url' o None y teléfonos). Nunca
+            incluye 'password' ni 'photo_file_id'.
+
+        Raises:
+            HTTPException: 403 si el administrador no está vinculado a una escuela o
+                el médico no pertenece a su escuela; 404 si el médico no existe.
         """
         school_id = self._get_school_id_for_admin(user_id)
 
@@ -1356,6 +1369,7 @@ class SchoolAdminService:
                 "address": user_data.get("address"),
                 "identity_number": user_data.get("identity_number"),
                 "biography": user_data.get("biography"),
+                "photo_url": user_data.get("photo_url"),
                 "phones": phones
             }
         }

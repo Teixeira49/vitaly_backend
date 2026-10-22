@@ -192,7 +192,10 @@ def test_get_doctor_detail_success(admin_client):
             "name": "Carlos",
             "lastname": "Ramos",
             "gender": "MASCULINO",
-            "email": "carlos@test.com"
+            "email": "carlos@test.com",
+            "photo_url": "https://cdn.test/doctors/88.jpg",
+            "photo_file_id": "file-abc-123",
+            "password": "hashed-secret",
         }
     }
     status_row = {"status_name": "Activo"}
@@ -215,6 +218,49 @@ def test_get_doctor_detail_success(admin_client):
     assert body["data"]["doctor_info"]["specialty"] == "General"
     assert body["data"]["user_info"]["fullname"] == "Dr. Carlos Ramos"
     assert len(body["data"]["user_info"]["phones"]) == 1
+    user_info = body["data"]["user_info"]
+    assert user_info["photo_url"] == "https://cdn.test/doctors/88.jpg"
+    assert "photo_file_id" not in user_info
+    assert "password" not in user_info
+
+
+def test_get_doctor_detail_without_photo_returns_null_photo_url(admin_client):
+    """Médico sin foto -> user_info.photo_url es null; nunca expone photo_file_id ni password."""
+    d2s_row = {"status": 1}
+    doc_row = {
+        "doc_id": 5,
+        "doc_license_number": "LIC-999",
+        "especially": "General",
+        "experience_years": 2018,
+        "user": {
+            "id": 88,
+            "name": "Carla",
+            "lastname": "Ramos",
+            "gender": "FEMENINO",
+            "email": "carla@test.com",
+            "photo_url": None,
+            "photo_file_id": None,
+            "password": "hashed-secret",
+        }
+    }
+
+    with patch.object(school_admin_service, "_get_school_id_for_admin", return_value=SCHOOL_ID), \
+         patch(f"{SERVICE_MODULE}.supabase") as mock_supabase:
+        route_tables(
+            mock_supabase,
+            doctor_to_school=make_query([d2s_row]),
+            doctor=make_query([doc_row]),
+            system_status=make_query([{"status_name": "Activo"}]),
+            user_phones=make_query([])
+        )
+        response = admin_client.get(f"{BASE_URL}/doctors/5")
+
+    assert response.status_code == 200
+    user_info = response.json()["data"]["user_info"]
+    assert "photo_url" in user_info
+    assert user_info["photo_url"] is None
+    assert "photo_file_id" not in user_info
+    assert "password" not in user_info
 
 
 def test_get_doctor_detail_not_linked_to_school_returns_403():
