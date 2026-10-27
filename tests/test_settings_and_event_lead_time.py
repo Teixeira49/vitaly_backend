@@ -119,7 +119,7 @@ def stored_config(value):
             configuración.
     """
     rows = [] if value is None else [settings_row(value)]
-    with patch(f"{SETTINGS_MODULE}.supabase") as mock_sb:
+    with patch(f"{SETTINGS_MODULE}.supabase_admin") as mock_sb:
         route_tables(mock_sb, settings=make_query(rows))
         yield mock_sb
 
@@ -216,9 +216,14 @@ class TestSettingsResolution:
         with stored_config(stored):
             assert settings_service.get_int(SettingKey.EVENT_MIN_LEAD_TIME_MINUTES) == 5
 
+    def test_missing_service_key_keeps_the_barrier_with_the_default(self):
+        """Sin clave de servicio la tabla es inalcanzable, pero la barrera sigue activa."""
+        with patch(f"{SETTINGS_MODULE}.supabase_admin", None):
+            assert settings_service.get_int(SettingKey.EVENT_MIN_LEAD_TIME_MINUTES) == 5
+
     def test_database_error_falls_back_to_five_minutes(self):
         """Un fallo de la base de datos no propaga ni desactiva la validación."""
-        with patch(f"{SETTINGS_MODULE}.supabase") as mock_sb:
+        with patch(f"{SETTINGS_MODULE}.supabase_admin") as mock_sb:
             mock_sb.table.side_effect = RuntimeError("conexión caída")
             assert settings_service.get_int(SettingKey.EVENT_MIN_LEAD_TIME_MINUTES) == 5
 
@@ -441,7 +446,7 @@ class TestUpdateEventLeadTime:
 class TestAdminSettingsEndpoints:
     def test_list_includes_declared_keys_with_defaults(self, sys_admin_client):
         """Sin filas almacenadas, el listado expone la clave con su valor por defecto."""
-        with patch(f"{SETTINGS_MODULE}.supabase") as mock_sb:
+        with patch(f"{SETTINGS_MODULE}.supabase_admin") as mock_sb:
             route_tables(mock_sb, settings=make_query([]))
             response = sys_admin_client.get(f"{SETTINGS_URL}/")
 
@@ -452,6 +457,21 @@ class TestAdminSettingsEndpoints:
         entry = next(item for item in body["data"] if item["key"] == LEAD_TIME_KEY)
         assert entry["value"] == {"type": "integer", "value": 5}
         assert entry["updated_at"] is None
+
+    def test_missing_service_key_surfaces_500_to_the_administrator(self, sys_admin_client):
+        """La administración no debe mostrar valores que aparenten estar vigentes."""
+        with patch(f"{SETTINGS_MODULE}.supabase_admin", None):
+            listing = sys_admin_client.get(f"{SETTINGS_URL}/")
+            writing = sys_admin_client.put(
+                f"{SETTINGS_URL}/{LEAD_TIME_KEY}",
+                json={"value": {"type": "integer", "value": 60}},
+            )
+
+        for response in (listing, writing):
+            assert response.status_code == 500
+            body = response.json()
+            assert body["success"] is False
+            assert "clave de servicio" in body["message"]
 
     def test_get_single_setting_returns_stored_value(self, sys_admin_client):
         """La consulta de una clave devuelve el valor vigente dentro del envelope."""
@@ -475,7 +495,7 @@ class TestAdminSettingsEndpoints:
         updated = settings_row({"type": "integer", "value": 720})
         query = make_query([stored])
 
-        with patch(f"{SETTINGS_MODULE}.supabase") as mock_sb:
+        with patch(f"{SETTINGS_MODULE}.supabase_admin") as mock_sb:
             route_tables(mock_sb, settings=query)
             query.execute.side_effect = [
                 MagicMock(data=[stored]),    # _fetch_row
@@ -497,7 +517,7 @@ class TestAdminSettingsEndpoints:
         created = settings_row({"type": "integer", "value": 90})
         query = make_query([])
 
-        with patch(f"{SETTINGS_MODULE}.supabase") as mock_sb:
+        with patch(f"{SETTINGS_MODULE}.supabase_admin") as mock_sb:
             route_tables(mock_sb, settings=query)
             query.execute.side_effect = [
                 MagicMock(data=[]),          # _fetch_row
@@ -511,6 +531,60 @@ class TestAdminSettingsEndpoints:
         assert response.status_code == 200
         query.insert.assert_called_once()
 
+    def test_update_restores_a_soft_deleted_key(self, sys_admin_client):
+        """Guardar sobre una clave borrada lógicamente la restaura, sin violar UNIQUE(key).
+
+        Regresión: `UNIQUE(key)` abarca la fila borrada, así que tratarla como
+        inexistente terminaba en un INSERT duplicado (23505) devuelto como 500.
+        """
+        deleted = {**settings_row({"type": "integer", "value": 5}), "is_deleted": True}
+        restored = {**settings_row({"type": "integer", "value": 120}), "is_deleted": False}
+        query = make_query([deleted])
+
+        with patch(f"{SETTINGS_MODULE}.supabase_admin") as mock_sb:
+            route_tables(mock_sb, settings=query)
+            query.execute.side_effect = [
+                MagicMock(data=[deleted]),    # _fetch_row(include_deleted=True)
+                MagicMock(data=[restored]),   # update
+            ]
+            response = sys_admin_client.put(
+                f"{SETTINGS_URL}/{LEAD_TIME_KEY}",
+                json={"value": {"type": "integer", "value": 120}},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["value"] == {"type": "integer", "value": 120}
+        query.update.assert_called_once()
+        query.insert.assert_not_called()
+        # La actualización levanta el borrado lógico para que la lectura lo aplique.
+        assert query.update.call_args.args[0]["is_deleted"] is False
+
+    def test_soft_deleted_key_is_not_applied_until_restored(self):
+        """Una configuración borrada lógicamente no se aplica: rige el fallback."""
+        with stored_config(None):  # la lectura filtra is_deleted=False
+            assert settings_service.get_int(SettingKey.EVENT_MIN_LEAD_TIME_MINUTES) == 5
+
+    def test_update_logs_actor_and_previous_value(self, sys_admin_client, caplog):
+        """La traza del cambio identifica al administrador y el valor anterior."""
+        stored = settings_row({"type": "integer", "value": 5})
+        updated = settings_row({"type": "integer", "value": 720})
+        query = make_query([stored])
+
+        with patch(f"{SETTINGS_MODULE}.supabase_admin") as mock_sb, caplog.at_level("INFO"):
+            route_tables(mock_sb, settings=query)
+            query.execute.side_effect = [
+                MagicMock(data=[stored]),
+                MagicMock(data=[updated]),
+            ]
+            sys_admin_client.put(
+                f"{SETTINGS_URL}/{LEAD_TIME_KEY}",
+                json={"value": {"type": "integer", "value": 720}},
+            )
+
+        traza = "\n".join(r.getMessage() for r in caplog.records)
+        assert f"user_id={sys_admin_payload()['sub']}" in traza
+        assert "'value': 5" in traza and "'value': 720" in traza
+
     @pytest.mark.parametrize(
         "value",
         [
@@ -523,7 +597,7 @@ class TestAdminSettingsEndpoints:
         """Un valor fuera de rango o de otro tipo se rechaza sin tocar la base de datos."""
         query = make_query([settings_row({"type": "integer", "value": 5})])
 
-        with patch(f"{SETTINGS_MODULE}.supabase") as mock_sb:
+        with patch(f"{SETTINGS_MODULE}.supabase_admin") as mock_sb:
             route_tables(mock_sb, settings=query)
             response = sys_admin_client.put(
                 f"{SETTINGS_URL}/{LEAD_TIME_KEY}", json={"value": value}

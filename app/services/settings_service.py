@@ -4,6 +4,15 @@ El alcance de esta tabla es **global**: no tiene ``school_id`` y, por tanto, no
 participa del aislamiento multi-tenant. Solo el rol ``admin_sistema`` puede
 modificarla a través de ``/api/v1/admin/settings``.
 
+``settings`` conserva RLS activo y sin políticas, de modo que la ``anon key``
+—la que usa el resto del backend y la que viaja al frontend— no puede leerla ni
+escribirla por la Data API. Este módulo es el único consumidor del cliente
+privilegiado ``supabase_admin`` (``service_role``): el único camino de escritura
+es el endpoint protegido por ``Depends(get_current_admin_sistema)``. Si
+``SUPABASE_SERVICE_KEY`` no está configurada, las lecturas de negocio aplican los
+valores por defecto y los endpoints de administración responden 500 explicando la
+causa, en lugar de aparentar que la configuración está vigente.
+
 Principio de diseño: **la configuración nunca desactiva una barrera de negocio**.
 Si la fila no existe, está borrada lógicamente, tiene un tipo que no corresponde
 o un valor fuera de rango, la lectura cae al valor por defecto declarado en
@@ -17,7 +26,7 @@ from typing import Any, Optional
 
 from fastapi import HTTPException
 
-from app.core.database import supabase
+from app.core.database import supabase_admin
 from app.schemas.enums import SettingKey, SettingValueType
 
 logger = logging.getLogger(__name__)
@@ -76,26 +85,56 @@ class SettingsService:
     # Helpers internos
     # ──────────────────────────────────────────────────────────
 
-    def _fetch_row(self, key: SettingKey) -> Optional[dict]:
-        """Lee la fila vigente de una clave de configuración.
+    def _require_admin_client(self) -> None:
+        """Exige el cliente privilegiado antes de una operación de administración.
+
+        Las lecturas de negocio toleran su ausencia cayendo al valor por defecto,
+        pero un administrador no debe recibir un listado que aparente estar
+        vigente cuando la tabla es inalcanzable.
+
+        Raises:
+            HTTPException: 500 si ``SUPABASE_SERVICE_KEY`` no está configurada.
+        """
+        if supabase_admin is None:
+            logger.error("SUPABASE_SERVICE_KEY no está configurada.")
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "La configuración del sistema no está disponible: falta la clave "
+                    "de servicio de Supabase en el entorno."
+                ),
+            )
+
+    def _fetch_row(self, key: SettingKey, include_deleted: bool = False) -> Optional[dict]:
+        """Lee la fila de una clave de configuración.
 
         Args:
             key: Clave a consultar.
+            include_deleted: Si es ``True``, devuelve también la fila borrada
+                lógicamente. La escritura lo necesita porque ``UNIQUE(key)``
+                abarca las filas borradas: ignorarlas llevaría a intentar un
+                INSERT duplicado. Las lecturas lo dejan en ``False``, porque una
+                configuración borrada no debe aplicarse.
 
         Returns:
-            dict | None: Fila de ``settings`` si existe y no está borrada
-            lógicamente; ``None`` si no hay configuración almacenada o si la
-            consulta falló (el fallo se registra, no se propaga).
+            dict | None: Fila de ``settings``, o ``None`` si no hay ninguna (o si
+            la consulta falló: el fallo se registra, no se propaga).
         """
-        try:
-            response = (
-                supabase.table("settings")
-                .select("key, value, description, updated_at")
-                .eq("key", key.value)
-                .eq("is_deleted", False)
-                .limit(1)
-                .execute()
+        if supabase_admin is None:
+            logger.error(
+                "SUPABASE_SERVICE_KEY no está configurada: no se puede leer la "
+                "configuración '%s'; rige su valor por defecto.", key.value,
             )
+            return None
+        try:
+            query = (
+                supabase_admin.table("settings")
+                .select("key, value, description, updated_at, is_deleted")
+                .eq("key", key.value)
+            )
+            if not include_deleted:
+                query = query.eq("is_deleted", False)
+            response = query.limit(1).execute()
         except Exception:
             logger.exception(
                 "Error al leer la configuración '%s'; se usará el valor por defecto.", key.value
@@ -261,11 +300,13 @@ class SettingsService:
             claves declaradas.
 
         Raises:
-            HTTPException: 500 si la consulta a la base de datos falla.
+            HTTPException: 500 si falta ``SUPABASE_SERVICE_KEY`` o si la consulta
+                a la base de datos falla.
         """
+        self._require_admin_client()
         try:
             response = (
-                supabase.table("settings")
+                supabase_admin.table("settings")
                 .select("key, value, description, updated_at")
                 .eq("is_deleted", False)
                 .execute()
@@ -293,6 +334,7 @@ class SettingsService:
             clave aún no tiene fila, devuelve su valor por defecto con
             ``updated_at`` en ``None``.
         """
+        self._require_admin_client()
         spec = SETTING_SPECS[key]
         return self._as_read_row(key, spec, self._fetch_row(key))
 
@@ -302,6 +344,7 @@ class SettingsService:
         value_type: SettingValueType,
         value: Any,
         description: Optional[str] = None,
+        actor_user_id: Optional[int] = None,
     ) -> dict:
         """Crea o actualiza el valor de una configuración declarada.
 
@@ -314,6 +357,8 @@ class SettingsService:
             value: Dato a persistir.
             description: Descripción a guardar. Si se omite, conserva la
                 existente o siembra la del contrato.
+            actor_user_id: ID del administrador que realiza el cambio. Solo se
+                usa para dejar traza en el log.
 
         Returns:
             dict: Fila resultante con ``key``, ``value``, ``description`` y
@@ -322,8 +367,10 @@ class SettingsService:
         Raises:
             HTTPException: 400 si el tipo no coincide con el declarado para la
                 clave, o si el valor queda fuera del rango admitido.
-            HTTPException: 500 si la escritura en la base de datos falla.
+            HTTPException: 500 si falta ``SUPABASE_SERVICE_KEY`` o si la escritura
+                en la base de datos falla.
         """
+        self._require_admin_client()
         spec = SETTING_SPECS[key]
 
         if value_type is not spec.value_type:
@@ -342,7 +389,9 @@ class SettingsService:
                 detail=self._invalid_value_message(key, spec),
             )
 
-        existing = self._fetch_row(key)
+        # Se consulta incluyendo la fila borrada lógicamente: UNIQUE(key) la
+        # abarca, así que guardar sobre ella es una restauración, no un INSERT.
+        existing = self._fetch_row(key, include_deleted=True)
         now = datetime.now(timezone.utc).isoformat()
         row = {
             "key": key.value,
@@ -351,14 +400,15 @@ class SettingsService:
             or (existing or {}).get("description")
             or spec.description,
             "updated_at": now,
+            "is_deleted": False,
         }
 
         try:
             if existing is None:
-                result = supabase.table("settings").insert(row).execute()
+                result = supabase_admin.table("settings").insert(row).execute()
             else:
                 result = (
-                    supabase.table("settings")
+                    supabase_admin.table("settings")
                     .update({k: v for k, v in row.items() if k != "key"})
                     .eq("key", key.value)
                     .execute()
@@ -373,7 +423,14 @@ class SettingsService:
             raise HTTPException(
                 status_code=500, detail="Ocurrió un error al guardar la configuración."
             )
-        logger.info("Configuración '%s' actualizada a %r.", key.value, candidate)
+        logger.info(
+            "Configuración '%s' actualizada por user_id=%s: %r -> %r%s",
+            key.value,
+            actor_user_id if actor_user_id is not None else "desconocido",
+            (existing or {}).get("value"),
+            candidate,
+            " (restaurada)" if (existing or {}).get("is_deleted") else "",
+        )
         return result.data[0]
 
     def _invalid_value_message(self, key: SettingKey, spec: SettingSpec) -> str:

@@ -20,11 +20,31 @@ Decisiones acordadas con el autor del issue, que resuelven su punto 5 («Resolve
 - **Edición:** la anticipación se revalida solo cuando cambia `init_time`.
 
 **Dependencias nuevas:** ninguna.
-**Variables de entorno nuevas:** ninguna.
+**Variables de entorno nuevas:** `SUPABASE_SERVICE_KEY` (clave `service_role`; documentada en el README). Debe añadirse al entorno de despliegue.
 **Migración de base de datos:** sí — `supabase/migrations/20261026120000_create_settings_table.sql`. Ya fue aplicada en el entorno de Supabase actual. Validada previamente en una instancia Postgres local desechable: se aplica, es reejecutable, siembra la clave y los CHECK aceptan/rechazan lo esperado.
 
-> [!WARNING]
-> **Pendiente de entorno, no de código:** la tabla `settings` quedó con **RLS activado y sin políticas** en Supabase. Como el backend se conecta con la `anon key`, no puede leer ni escribir esa tabla: la validación funciona, pero siempre con el fallback de 5 minutos, y los endpoints de administración no operarían. Se resuelve con `ALTER TABLE public.settings DISABLE ROW LEVEL SECURITY;` (el resto de tablas del proyecto no tienen RLS). No se incluye en esta PR por ser una decisión de infraestructura.
+### Acceso seguro a `settings` (hallazgo 1 de la revisión)
+
+La tabla conserva **RLS activo y sin políticas**, a propósito. La `anon key` es la que usa el resto del backend y la que viaja al frontend: con RLS activo y cero políticas, esa clave no puede leer ni modificar `settings` por la Data API, así que el único camino de escritura es el endpoint protegido por `Depends(get_current_admin_sistema)`.
+
+El backend accede a la tabla con un cliente `service_role` dedicado (`supabase_admin` en `app/core/database.py`), cuyo **único consumidor** es `settings_service`. No se usa para datos con alcance de escuela: ignora RLS y anularía la defensa en profundidad.
+
+Si `SUPABASE_SERVICE_KEY` falta, la API arranca igual: las lecturas de negocio aplican los valores por defecto (la barrera sigue activa) y los endpoints de administración responden **500** indicando la causa, en lugar de mostrar un listado que aparente estar vigente.
+
+Evidencia del comportamiento anónimo contra el entorno real, con la `anon key`:
+
+| Operación | Resultado |
+| :--- | :--- |
+| `SELECT` | 0 filas visibles (RLS sin políticas las oculta) |
+| `INSERT` | rechazado, `42501 new row violates row-level security policy` |
+| `UPDATE` | 0 filas afectadas (las filas son invisibles: no-op) |
+| `DELETE` | 0 filas afectadas (las filas son invisibles: no-op) |
+
+### Correcciones aplicadas tras la revisión
+
+- **Clave borrada lógicamente (bloqueante 2).** `UNIQUE(key)` abarca la fila borrada, así que tratarla como inexistente terminaba en un INSERT duplicado (23505) devuelto como 500. La escritura ahora consulta con `include_deleted=True` y **restaura** la fila (`is_deleted=False`), manteniendo la validación de tipo y rango. Regresión cubierta en `test_update_restores_a_soft_deleted_key`; las lecturas siguen filtrando `is_deleted=False`, de modo que una configuración borrada no se aplica hasta restaurarse.
+- **Trazabilidad (observación no bloqueante).** `upsert_setting` recibe el `actor_user_id` del endpoint y la traza registra quién cambió qué, con valor anterior → nuevo y marca de restauración. No se añade tabla de auditoría: no existe esa infraestructura en el proyecto y crearla excede este PR.
+- **Privilegios vigentes en un JWT (observación no bloqueante).** No se aborda aquí: que un token válido conserve privilegios tras desactivar o degradar la cuenta afecta a **todos** los endpoints del proyecto, no solo al PUT añadido. Corresponde a un issue propio.
 
 Closes #44
 
@@ -42,7 +62,7 @@ Closes #44
 
 ## ¿Cómo se ha probado esto?
 
-Pruebas automatizadas (`pytest`): 391 tests en verde, 40 de ellos nuevos en `tests/test_settings_and_event_lead_time.py`, cubriendo fallback, límites exactos de los criterios de aceptación, redondeo con segundos, equivalencia de instantes con distintos offsets, configuración inválida, ausencia de escrituras ante rechazo, contrato del error y matriz RBAC de la configuración.
+Pruebas automatizadas (`pytest`): 396 tests en verde, 45 de ellos nuevos en `tests/test_settings_and_event_lead_time.py`, cubriendo fallback, límites exactos de los criterios de aceptación, redondeo con segundos, equivalencia de instantes con distintos offsets, configuración inválida, ausencia de escrituras ante rechazo, contrato del error, restauración de una clave borrada lógicamente, ausencia de la clave de servicio y matriz RBAC de la configuración.
 
 Prueba manual sugerida (reloj del servidor en UTC; usa horas relativas a tu «ahora»):
 
@@ -61,12 +81,12 @@ Prueba manual sugerida (reloj del servidor en UTC; usa horas relativas a tu «ah
 - Servidor local: `uvicorn app.main:app --reload`
 - Documentación interactiva: `http://localhost:8000/docs`
 - Pruebas automatizadas: `pytest`
-- Requiere la migración `20261026120000_create_settings_table.sql` aplicada. Sin ella (o con RLS bloqueando la lectura) el sistema sigue funcionando con el fallback de 5 minutos.
+- Requiere la migración `20261026120000_create_settings_table.sql` aplicada y `SUPABASE_SERVICE_KEY` en el entorno. Sin cualquiera de las dos, el sistema sigue funcionando con el fallback de 5 minutos.
 
 ## Lista de Verificación
 
 - [ ] He agregado las nuevas dependencias en la descripción *(no aplica: ninguna)*
-- [ ] He agregado las nuevas variables de entorno (solo los nombres y rutas) a la descripción *(no aplica: ninguna)*
+- [x] He agregado las nuevas variables de entorno (solo los nombres y rutas) a la descripción
 - [x] Mi código sigue las pautas de estilo de este proyecto
 - [x] He realizado una auto-revisión de mi código
 - [x] He comentado mi código, particularmente en áreas difíciles de entender

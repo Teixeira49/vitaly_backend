@@ -68,8 +68,16 @@ El backend está construido con un enfoque en seguridad, escalabilidad y estanda
     ```env
     SUPABASE_URL=tu_url
     SUPABASE_KEY=tu_key
+    SUPABASE_SERVICE_KEY=tu_service_role_key
     JWT_SECRET=tu_secreto
     ```
+
+    `SUPABASE_SERVICE_KEY` es la clave `service_role` del proyecto. Solo la usa
+    la tabla `settings` (configuración global del sistema), que conserva RLS
+    activo y sin políticas para que la `anon key` no pueda leerla ni modificarla
+    por la Data API. **Nunca debe salir del servidor ni llegar al frontend.** Si
+    falta, la API arranca igual: la configuración aplica sus valores por defecto
+    y los endpoints `/api/v1/admin/settings` responden 500 indicando la causa.
 
 3.  **Ejecutar Servidor en Desarrollo:**
     ```bash

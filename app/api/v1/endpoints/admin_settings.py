@@ -118,5 +118,6 @@ def update_setting(
         value_type=payload.value.type,
         value=payload.value.value,
         description=payload.description,
+        actor_user_id=int(admin_payload["sub"]),
     )
     return APIResponse(data=result, message="Configuración actualizada exitosamente")

@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     """Application settings defined dynamically."""
     SUPABASE_URL: str
     SUPABASE_KEY: str
+    # Clave service_role. Solo la usa app/services/settings_service.py para la
+    # tabla `settings`, que conserva RLS activo y sin políticas. Si falta, la
+    # configuración no se puede leer ni escribir y rigen los valores por defecto.
+    SUPABASE_SERVICE_KEY: Optional[str] = None
     SECRET_KEY: str = "default-insecure-secret-key"  # Override in production
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     API_V1_STR: str = "/api/v1"

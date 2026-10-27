@@ -15,6 +15,7 @@ os.environ.update(
     {
         "SUPABASE_URL": "http://127.0.0.1:54321",
         "SUPABASE_KEY": "test-supabase-key",
+        "SUPABASE_SERVICE_KEY": "test-supabase-service-key",
         "SECRET_KEY": "test-secret-key-not-for-production",
         "IMAGEKIT_PUBLIC_KEY": "",
         "IMAGEKIT_PRIVATE_KEY": "",
