@@ -14,6 +14,7 @@ tags_metadata = [
     {"name": "Autenticación - Administración", "description": "Portal de administración: login exclusivo de administradores de sistema."},
     {"name": "Administrador de Sistema", "description": "Gestión global del sistema por superusuarios."},
     {"name": "Administrador de Sistema - Feat. Escuela", "description": "Gestión de escuelas por parte del administrador de sistema."},
+    {"name": "Administrador de Sistema - Configuración", "description": "Configuración global del sistema (tabla `settings`)."},
     {"name": "Administrador de Escuela", "description": "Gestión específica para los administradores de cada plantel."},
     {"name": "Administrador de Escuela - Estudiantes", "description": "Gestión de estudiantes, representantes y salones de clase."},
     {"name": "Administrador de Escuela - Salones", "description": "Gestión de salones, grados y categorías académicas."},

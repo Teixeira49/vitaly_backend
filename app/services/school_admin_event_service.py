@@ -7,6 +7,7 @@ tiene una participación registrada a nombre de ese administrador.
 
 from fastapi import HTTPException
 from app.core.database import supabase
+from app.services.event_schedule_policy import validate_lead_time
 from datetime import datetime, date
 from calendar import monthrange
 
@@ -147,8 +148,9 @@ class SchoolAdminEventService:
     def create_event(self, user_id: int, payload) -> dict:
         """Crea un evento y sus participaciones de salones y médicos.
 
-        Valida que todos los salones y médicos indicados pertenezcan a la escuela
-        del administrador antes de insertar nada.
+        Valida que el inicio respete la anticipación mínima configurada y que
+        todos los salones y médicos indicados pertenezcan a la escuela del
+        administrador antes de insertar nada.
 
         Args:
             user_id: ID del administrador autenticado (claim ``sub`` del JWT).
@@ -160,12 +162,18 @@ class SchoolAdminEventService:
 
         Raises:
             HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+            FieldValidationError: 422 si el inicio no respeta la anticipación
+                mínima vigente (ver :mod:`app.services.event_schedule_policy`).
             HTTPException: 400 si algún salón o médico no pertenece a la escuela.
             HTTPException: 500 si la inserción del evento no devuelve la fila.
         """
         admin = self._get_admin_record(user_id)
         sch_admin_id = admin["sch_admin_id"]
         school_id = admin["school_id"]
+
+        # Anticipación mínima: se valida antes de cualquier escritura para que un
+        # horario rechazado no deje evento ni participaciones creados.
+        validate_lead_time(payload.init_time)
 
         # Validar que los classrooms pertenecen a la escuela
         valid_classroom_ids = self._get_school_classroom_ids(school_id)
@@ -535,6 +543,11 @@ class SchoolAdminEventService:
         ``init_time`` y ``ent_time``, y revalida que la fecha de fin siga siendo
         posterior a la de inicio con los valores resultantes.
 
+        Reprogramar cuenta como programar: si el cuerpo trae ``init_time``, el
+        nuevo inicio debe respetar la anticipación mínima vigente. Las ediciones
+        que no tocan el inicio (ej. corregir el título de un evento ya ocurrido)
+        no pasan por esa validación.
+
         Args:
             user_id: ID del administrador autenticado (claim ``sub`` del JWT).
             event_id: ID del evento a actualizar.
@@ -547,6 +560,8 @@ class SchoolAdminEventService:
             HTTPException: 403 si el usuario no está vinculado a ninguna escuela, o
                 si el evento pertenece a otra escuela.
             HTTPException: 404 si no existe un evento activo con ese ID.
+            FieldValidationError: 422 si se envía un ``init_time`` que no respeta
+                la anticipación mínima vigente.
             HTTPException: 400 si no se envió ningún campo válido, o si la fecha de
                 finalización no es posterior a la de inicio.
         """
@@ -554,6 +569,10 @@ class SchoolAdminEventService:
         sch_admin_id = admin["sch_admin_id"]
 
         event = self._validate_event_ownership(event_id, sch_admin_id)
+
+        # Solo se revalida la anticipación cuando se reprograma el inicio.
+        if payload.get("init_time") is not None:
+            validate_lead_time(payload["init_time"])
 
         # Construir campos a actualizar (solo los que se enviaron)
         update_data = {}

@@ -168,3 +168,56 @@ CREATE_RESPONSES: ResponsesDict = {**PROTECTED_RESPONSES, **BAD_REQUEST}
 
 #: Creación con alcance de escuela.
 TENANT_CREATE_RESPONSES: ResponsesDict = {**TENANT_RESPONSES, **BAD_REQUEST}
+
+
+#: 422 de los endpoints de eventos: añade al error de validación de Pydantic el
+#: error de dominio por anticipación insuficiente. Los valores replican las
+#: constantes de :mod:`app.services.event_schedule_policy`; el mensaje es
+#: deliberadamente genérico y no revela el margen vigente ni el umbral.
+EVENT_SCHEDULE_UNPROCESSABLE: ResponsesDict = {
+    422: {
+        "model": APIResponse[None],
+        "description": (
+            "Error de validación del cuerpo, o el horario de inicio no respeta la "
+            "anticipación mínima configurada."
+        ),
+        "content": {
+            "application/json": {
+                "examples": {
+                    "validation_error": {
+                        "summary": "Error de validación de esquema",
+                        "value": {
+                            "success": False,
+                            "message": "Validation error",
+                            "data": None,
+                            "errors": [
+                                {
+                                    "loc": ["body", "ent_time"],
+                                    "msg": "La fecha de finalización debe ser posterior a la de inicio.",
+                                    "type": "value_error",
+                                }
+                            ],
+                            "meta": None,
+                        },
+                    },
+                    "event_schedule_unavailable": {
+                        "summary": "Anticipación mínima no respetada",
+                        "value": {
+                            "success": False,
+                            "message": "El horario seleccionado no está disponible. Por favor, elige otro horario.",
+                            "data": None,
+                            "errors": [
+                                {
+                                    "loc": ["body", "init_time"],
+                                    "msg": "El horario seleccionado no está disponible. Por favor, elige otro horario.",
+                                    "type": "event_schedule_unavailable",
+                                }
+                            ],
+                            "meta": None,
+                        },
+                    },
+                }
+            }
+        },
+    }
+}

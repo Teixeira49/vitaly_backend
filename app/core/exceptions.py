@@ -1,10 +1,48 @@
 """Handlers globales que envuelven los errores en el formato ``APIResponse``."""
 
-from fastapi import Request, status
+from typing import Optional, Sequence, Union
+
+from fastapi import HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.schemas.responses import APIResponse, ErrorDetail
+
+
+class FieldValidationError(HTTPException):
+    """``HTTPException`` de negocio asociada a un campo concreto del cuerpo.
+
+    Permite que un servicio rechace un dato con la misma forma que un error de
+    validación de Pydantic (``errors[].loc`` / ``msg`` / ``type``), para que el
+    frontend pueda mostrar el mensaje junto al campo responsable sin inspeccionar
+    el texto de ``message``.
+
+    El ``message`` del envelope y el ``msg`` del detalle son el mismo texto: no
+    deben revelar umbrales, márgenes ni ninguna otra regla interna.
+
+    Args:
+        loc: Ruta del campo que falló, ej. ``["body", "init_time"]``.
+        msg: Mensaje legible y genérico, apto para mostrarse al usuario final.
+        error_type: Identificador estable del error, ej.
+            ``"event_schedule_unavailable"``. Es el contrato que consume el
+            frontend; no cambia aunque cambie el texto del mensaje.
+        status_code: Código HTTP a devolver. Por defecto 422, igual que los
+            errores de validación de Pydantic.
+    """
+
+    def __init__(
+        self,
+        *,
+        loc: Sequence[Union[str, int]],
+        msg: str,
+        error_type: str,
+        status_code: int = 422,
+    ) -> None:
+        super().__init__(status_code=status_code, detail=msg)
+        self.errors: list[ErrorDetail] = [
+            ErrorDetail(loc=list(loc), msg=msg, type=error_type)
+        ]
+
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Traduce un error de validación de Pydantic al envelope ``APIResponse``.
@@ -33,15 +71,20 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     producen un 500 sin envelope: los servicios deben relanzarlas como
     ``HTTPException(500)``.
 
+    Si la excepción es una :class:`FieldValidationError`, su lista ``errors`` se
+    propaga al envelope para que el error quede asociado a un campo.
+
     Args:
         request: Petición que originó el error. No se usa, lo exige Starlette.
         exc: Excepción HTTP con su ``status_code`` y ``detail``.
 
     Returns:
-        JSONResponse: El ``status_code`` original con ``success=False`` y el
-        ``detail`` de la excepción en ``message``.
+        JSONResponse: El ``status_code`` original con ``success=False``, el
+        ``detail`` de la excepción en ``message`` y, si existen, los detalles por
+        campo en ``errors``.
     """
+    errors: Optional[list[ErrorDetail]] = getattr(exc, "errors", None)
     return JSONResponse(
         status_code=exc.status_code,
-        content=APIResponse(success=False, message=str(exc.detail)).model_dump()
+        content=APIResponse(success=False, message=str(exc.detail), errors=errors).model_dump()
     )

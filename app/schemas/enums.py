@@ -39,3 +39,28 @@ class BloodType(str, Enum):
     AB_NEG = "AB-"
     O_POS = "O+"
     O_NEG = "O-"
+
+
+class SettingKey(str, Enum):
+    """Claves de la tabla `settings`: el tipo de configuración global del sistema.
+
+    Toda clave leída o escrita por la API debe existir aquí; la tabla no admite
+    claves ad-hoc desde el cliente.
+    """
+
+    #: Minutos mínimos de anticipación para programar el inicio de un evento.
+    EVENT_MIN_LEAD_TIME_MINUTES = "event_min_lead_time_minutes"
+
+
+class SettingValueType(str, Enum):
+    """Tipo de dato declarado dentro del JSON `settings.value`.
+
+    Replica el CHECK `settings_value_type_match` de la migración: el tipo
+    declarado debe coincidir con el tipo JSON real del dato almacenado.
+    """
+
+    INTEGER = "integer"
+    NUMBER = "number"
+    STRING = "string"
+    BOOLEAN = "boolean"
+    JSON = "json"

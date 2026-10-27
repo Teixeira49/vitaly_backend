@@ -3,7 +3,12 @@
 from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_current_admin_escuela
-from app.core.openapi_responses import BAD_REQUEST, TENANT_DETAIL_RESPONSES, TENANT_RESPONSES
+from app.core.openapi_responses import (
+    BAD_REQUEST,
+    EVENT_SCHEDULE_UNPROCESSABLE,
+    TENANT_DETAIL_RESPONSES,
+    TENANT_RESPONSES,
+)
 from app.schemas.responses import APIResponse
 from app.schemas.event import EventCreate, EventUpdate
 from app.services.school_admin_event_service import school_admin_event_service
@@ -21,9 +26,10 @@ router = APIRouter()
         "Crea un evento en la escuela del administrador y genera una fila en "
         "'event_participation' por cada salón y cada médico convocado. Todos los salones y "
         "médicos indicados deben pertenecer a la escuela; la fecha de fin debe ser posterior "
-        "a la de inicio."
+        "a la de inicio y el inicio debe respetar la anticipación mínima configurada en el "
+        "sistema, medida contra el reloj del servidor."
     ),
-    responses={**TENANT_RESPONSES, **BAD_REQUEST},
+    responses={**TENANT_RESPONSES, **BAD_REQUEST, **EVENT_SCHEDULE_UNPROCESSABLE},
 )
 def create_event(
     payload: EventCreate,
@@ -43,6 +49,10 @@ def create_event(
         HTTPException(401): Si el token es inválido, expiró o fue revocado.
         HTTPException(403): Si el rol no es admin_escuela, o si el usuario no está
             vinculado a ninguna escuela.
+        FieldValidationError(422): Si 'init_time' no respeta la anticipación mínima
+            vigente. El error viaja en el envelope con errors[0].loc = ["body",
+            "init_time"] y type = "event_schedule_unavailable"; el mensaje es
+            genérico y no revela el margen ni el umbral calculado.
         HTTPException(400): Si algún salón o médico no pertenece a la escuela.
         HTTPException(500): Si la inserción del evento no devuelve la fila creada.
     """
@@ -209,9 +219,11 @@ def cancel_event(
     description=(
         "Modifica los datos base del evento (título, descripción y fechas). No altera las "
         "participaciones de salones ni médicos. Solo se aplican los campos enviados y se "
-        "revalida que la fecha de fin siga siendo posterior a la de inicio."
+        "revalida que la fecha de fin siga siendo posterior a la de inicio. Si el cuerpo "
+        "trae 'init_time', el nuevo inicio debe respetar además la anticipación mínima "
+        "configurada; las ediciones que no tocan el inicio no la revalidan."
     ),
-    responses={**TENANT_DETAIL_RESPONSES, **BAD_REQUEST},
+    responses={**TENANT_DETAIL_RESPONSES, **BAD_REQUEST, **EVENT_SCHEDULE_UNPROCESSABLE},
 )
 def update_event(
     event_id: int,
@@ -233,6 +245,8 @@ def update_event(
         HTTPException(403): Si el rol no es admin_escuela, o si el usuario no está
             vinculado a ninguna escuela. También 403 si el evento pertenece a otra escuela.
         HTTPException(404): Si no existe un evento activo con ese ID.
+        FieldValidationError(422): Si se envía un 'init_time' que no respeta la
+            anticipación mínima vigente.
         HTTPException(400): Si no se envió ningún campo válido, o si la fecha de
             finalización no es posterior a la de inicio.
     """

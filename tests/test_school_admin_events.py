@@ -133,17 +133,20 @@ def test_create_event_service_success():
     event_query = make_query([{"id": 10}])
     part_query = make_query([{"id": 1}])
 
+    # La anticipación mínima se valida en su propia batería de pruebas
+    # (tests/test_settings_and_event_lead_time.py); aquí interesa la inserción.
     with patch.object(school_admin_event_service, "_get_admin_record", return_value=ADMIN_RECORD), \
          patch.object(school_admin_event_service, "_get_school_classroom_ids", return_value=[1, 2]), \
          patch.object(school_admin_event_service, "_get_school_doctor_ids", return_value=[5]), \
+         patch(f"{SERVICE_MODULE}.validate_lead_time"), \
          patch(f"{SERVICE_MODULE}.supabase") as mock_supabase:
         route_tables(mock_supabase, event=event_query, event_participation=part_query)
 
         payload_mock = MagicMock()
         payload_mock.title = "Jornada de Salud"
         payload_mock.description = "Revisión general"
-        payload_mock.init_time = datetime(2026, 5, 1, 8, 0, tzinfo=UTC)
-        payload_mock.ent_time = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+        payload_mock.init_time = datetime(2027, 5, 1, 8, 0, tzinfo=UTC)
+        payload_mock.ent_time = datetime(2027, 5, 1, 12, 0, tzinfo=UTC)
         payload_mock.classroom_ids = [1, 2]
         payload_mock.doctor_ids = [5]
 
@@ -159,7 +162,8 @@ def test_create_event_service_success():
 def test_create_event_foreign_classroom_returns_400():
     """Intentar crear evento con salones de otra escuela -> 400 Bad Request."""
     with patch.object(school_admin_event_service, "_get_admin_record", return_value=ADMIN_RECORD), \
-         patch.object(school_admin_event_service, "_get_school_classroom_ids", return_value=[1, 2]):
+         patch.object(school_admin_event_service, "_get_school_classroom_ids", return_value=[1, 2]), \
+         patch(f"{SERVICE_MODULE}.validate_lead_time"):
         payload_mock = MagicMock()
         payload_mock.classroom_ids = [999]  # Foreign classroom
         payload_mock.doctor_ids = []
@@ -175,7 +179,8 @@ def test_create_event_foreign_doctor_returns_400():
     """Intentar crear evento con doctores no asignados a la escuela -> 400 Bad Request."""
     with patch.object(school_admin_event_service, "_get_admin_record", return_value=ADMIN_RECORD), \
          patch.object(school_admin_event_service, "_get_school_classroom_ids", return_value=[1]), \
-         patch.object(school_admin_event_service, "_get_school_doctor_ids", return_value=[10]):
+         patch.object(school_admin_event_service, "_get_school_doctor_ids", return_value=[10]), \
+         patch(f"{SERVICE_MODULE}.validate_lead_time"):
         payload_mock = MagicMock()
         payload_mock.classroom_ids = [1]
         payload_mock.doctor_ids = [999]  # Foreign doctor
