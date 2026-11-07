@@ -1,11 +1,20 @@
+"""Personalización de la documentación interactiva (Swagger UI y ReDoc).
+
+Define también ``tags_metadata``, el agrupamiento por dominio que FastAPI usa
+para ordenar los endpoints en ``/docs``.
+"""
+
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
 # Definición de etiquetas para organizar la documentación
 tags_metadata = [
-    {"name": "auth", "description": "Operaciones de autenticación, login y registro de diferentes roles."},
+    {"name": "auth", "description": "Registro de roles, logout y el alias obsoleto `POST /auth/login`."},
+    {"name": "Autenticación - Clientes", "description": "Portal de clientes: login de administradores de escuela, doctores y representantes."},
+    {"name": "Autenticación - Administración", "description": "Portal de administración: login exclusivo de administradores de sistema."},
     {"name": "Administrador de Sistema", "description": "Gestión global del sistema por superusuarios."},
     {"name": "Administrador de Sistema - Feat. Escuela", "description": "Gestión de escuelas por parte del administrador de sistema."},
+    {"name": "Administrador de Sistema - Configuración", "description": "Configuración global del sistema (tabla `settings`)."},
     {"name": "Administrador de Escuela", "description": "Gestión específica para los administradores de cada plantel."},
     {"name": "Administrador de Escuela - Estudiantes", "description": "Gestión de estudiantes, representantes y salones de clase."},
     {"name": "Administrador de Escuela - Salones", "description": "Gestión de salones, grados y categorías académicas."},
@@ -18,10 +27,26 @@ tags_metadata = [
 ]
 
 def setup_openapi(app: FastAPI):
-    """Configura los endpoints personalizados para la documentación OpenAPI/Swagger/ReDoc."""
+    """Registra las rutas de documentación interactiva con el tema de Vitaly.
+
+    Sustituye las páginas por defecto de FastAPI (deshabilitadas con
+    ``docs_url=None`` y ``redoc_url=None`` en ``app/main.py``) por versiones
+    personalizadas servidas desde CDN. Ambas quedan fuera del esquema OpenAPI.
+
+    Args:
+        app: Instancia de FastAPI sobre la que se registran ``/docs`` y ``/redoc``.
+
+    Returns:
+        None: Registra las rutas como efecto secundario sobre ``app``.
+    """
     
     @app.get("/docs", include_in_schema=False)
     async def custom_swagger_ui_html():
+        """Sirve la interfaz Swagger UI personalizada.
+
+        Returns:
+            HTMLResponse: Página HTML de Swagger UI apuntando a ``/openapi.json``.
+        """
         return HTMLResponse(
             content=f"""
             <!DOCTYPE html>
@@ -61,6 +86,11 @@ def setup_openapi(app: FastAPI):
 
     @app.get("/redoc", include_in_schema=False)
     async def custom_redoc_html():
+        """Sirve la documentación de referencia en ReDoc.
+
+        Returns:
+            HTMLResponse: Página HTML de ReDoc apuntando a ``/openapi.json``.
+        """
         return HTMLResponse(
             content=f"""
             <!DOCTYPE html>

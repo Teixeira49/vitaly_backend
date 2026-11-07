@@ -1,3 +1,5 @@
+"""Integración con ImageKit.io para el almacenamiento de imágenes."""
+
 import logging
 import uuid
 from dataclasses import dataclass
@@ -22,6 +24,11 @@ class ImageKitService:
     """Servicio para la integración con ImageKit.io para almacenamiento de multimedia."""
 
     def __init__(self) -> None:
+        """Construye el servicio sin contactar ImageKit todavía.
+
+        El cliente se inicializa de forma perezosa en :meth:`_get_client`, para que
+        la aplicación arranque aunque las credenciales no estén configuradas.
+        """
         self._client: Optional[ImageKit] = None
 
     def _get_client(self) -> ImageKit:

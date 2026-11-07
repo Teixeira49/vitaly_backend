@@ -1,6 +1,9 @@
+"""Salones, grados y secciones de la escuela del administrador autenticado."""
+
 from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_current_admin_escuela
+from app.core.openapi_responses import TENANT_DETAIL_RESPONSES
 from app.schemas.responses import APIResponse
 from app.services.school_admin_service import school_admin_service
 
@@ -11,17 +14,36 @@ router = APIRouter()
 # GET - Grados Académicos (Classrooms del año vigente)
 # ──────────────────────────────────────────────────────────
 
-@router.get("/", response_model=APIResponse[dict])
+@router.get("/", response_model=APIResponse[dict],
+    summary="Listar grados del año vigente",
+    description=(
+        "Retorna de forma paginada los grados y salones de la escuela del administrador, "
+        "restringidos al año académico vigente (is_current=True) y ordenados por categoría y "
+        "nivel."
+    ),
+    responses=TENANT_DETAIL_RESPONSES,
+)
 def get_academic_grades(
     page: int = Query(1, ge=1, description="Número de página"),
     size: int = Query(20, ge=1, le=100, description="Elementos por página"),
     admin_payload: dict = Depends(get_current_admin_escuela)
 ):
-    """
-    Lista paginada de grados/salones de la escuela del admin, filtrados por el año académico vigente (is_current=True).
-    Los resultados se ordenan por categoría y luego por nivel.
+    """Lista de forma paginada los grados de la escuela en el año vigente.
 
-    Requiere JWT (admin_escuela).
+    Multi-tenancy:
+        El 'school_id' se resuelve en el servidor a partir del usuario autenticado
+        (admin_payload['sub']); el cliente nunca lo envía.
+
+    RBAC:
+        Requiere rol admin_escuela autenticado mediante Bearer token.
+
+    Raises:
+        HTTPException(401): Si el token es inválido, expiró o fue revocado.
+        HTTPException(403): Si el rol no es admin_escuela, o si el usuario no está
+            vinculado a ninguna escuela.
+        HTTPException(404): Si no hay un año académico vigente, o si la escuela no
+            tiene grados registrados en él. Este segundo 404 ante una colección
+            vacía es comportamiento legado; se sigue en el issue #15.
     """
     user_id = int(admin_payload["sub"])
     result = school_admin_service.get_academic_grades(user_id=user_id, page=page, size=size)
@@ -32,18 +54,36 @@ def get_academic_grades(
 # GET - Estudiantes de un salón específico
 # ──────────────────────────────────────────────────────────
 
-@router.get("/{classroom_id}/students", response_model=APIResponse[dict])
+@router.get("/{classroom_id}/students", response_model=APIResponse[dict],
+    summary="Listar estudiantes de un salón",
+    description=(
+        "Retorna de forma paginada los estudiantes inscritos en el salón indicado, previa "
+        "verificación de que el salón pertenece a la escuela del administrador."
+    ),
+    responses=TENANT_DETAIL_RESPONSES,
+)
 def get_students_by_classroom(
     classroom_id: int,
     page: int = Query(1, ge=1, description="Número de página"),
     size: int = Query(20, ge=1, le=100, description="Elementos por página"),
     admin_payload: dict = Depends(get_current_admin_escuela)
 ):
-    """
-    Lista paginada de los estudiantes inscritos en un salón específico.
-    Valida que el salón pertenezca a la misma escuela del admin autenticado.
+    """Lista de forma paginada los estudiantes inscritos en un salón.
 
-    Requiere JWT (admin_escuela).
+    Multi-tenancy:
+        El 'school_id' se resuelve en el servidor a partir del usuario autenticado
+        (admin_payload['sub']); el cliente nunca lo envía. El salón se busca primero por su id y luego se compara su 'school_id'
+        con el resuelto: si no coincide, responde 403, no 404.
+
+    RBAC:
+        Requiere rol admin_escuela autenticado mediante Bearer token.
+
+    Raises:
+        HTTPException(401): Si el token es inválido, expiró o fue revocado.
+        HTTPException(403): Si el rol no es admin_escuela, o si el usuario no está
+            vinculado a ninguna escuela. También 403 si el salón pertenece a otra escuela.
+        HTTPException(404): Si el salón no existe, o si no tiene estudiantes
+            registrados. Este segundo 404 es comportamiento legado (issue #15).
     """
     user_id = int(admin_payload["sub"])
     result = school_admin_service.get_students_by_classroom(
@@ -59,19 +99,33 @@ def get_students_by_classroom(
 # GET - Resumen de categorías/niveles del año académico vigente
 # ──────────────────────────────────────────────────────────
 
-@router.get("/categories-summary", response_model=APIResponse[dict])
+@router.get("/categories-summary", response_model=APIResponse[dict],
+    summary="Resumir categorías y niveles",
+    description=(
+        "Retorna las combinaciones únicas de nivel y categoría presentes en los salones de la "
+        "escuela para el año académico vigente. Con 'category_id' el resultado se restringe a "
+        "los niveles de esa categoría."
+    ),
+    responses=TENANT_DETAIL_RESPONSES,
+)
 def get_classroom_categories_summary(
     category_id: int = Query(None, description="ID de la categoría para filtrar los niveles (opcional)."),
     admin_payload: dict = Depends(get_current_admin_escuela)
 ):
-    """
-    Retorna las combinaciones únicas de (level, classroom_category_id, classroom_type_name)
-    presentes en los salones de la escuela para el año académico vigente.
+    """Resume los salones de la escuela agrupados por categoría y nivel.
 
-    Si se proporciona `category_id`, el resultado se filtrará para devolver únicamente 
-    los niveles correspondientes a esa categoría específica.
+    Multi-tenancy:
+        El 'school_id' se resuelve en el servidor a partir del usuario autenticado
+        (admin_payload['sub']); el cliente nunca lo envía.
 
-    Requiere JWT (admin_escuela).
+    RBAC:
+        Requiere rol admin_escuela autenticado mediante Bearer token.
+
+    Raises:
+        HTTPException(401): Si el token es inválido, expiró o fue revocado.
+        HTTPException(403): Si el rol no es admin_escuela, o si el usuario no está
+            vinculado a ninguna escuela.
+        HTTPException(404): Si no hay un año académico vigente configurado.
     """
     user_id = int(admin_payload["sub"])
     result = school_admin_service.get_classroom_categories_summary(
@@ -85,18 +139,32 @@ def get_classroom_categories_summary(
 # GET - Lista simple de categorías disponibles para la escuela
 # ──────────────────────────────────────────────────────────
 
-@router.get("/categories-available", response_model=APIResponse[dict])
+@router.get("/categories-available", response_model=APIResponse[dict],
+    summary="Listar categorías disponibles",
+    description=(
+        "Retorna las categorías (Preescolar, Primaria, etc.) que la escuela realmente usa en "
+        "el año académico vigente. A diferencia de /categories-summary, no desglosa los "
+        "niveles: sirve para poblar un selector sin ofrecer categorías vacías."
+    ),
+    responses=TENANT_DETAIL_RESPONSES,
+)
 def get_available_classroom_categories(
     admin_payload: dict = Depends(get_current_admin_escuela)
 ):
-    """
-    Retorna la lista única de categorías (PREESCOLAR, PRIMARIA, etc.) disponibles 
-    en la escuela para el año académico vigente.
-    
-    A diferencia de /categories-summary, este endpoint no incluye los niveles (grados),
-    solo las categorías principales.
+    """Lista las categorías de salón en uso por la escuela este año.
 
-    Requiere JWT (admin_escuela).
+    Multi-tenancy:
+        El 'school_id' se resuelve en el servidor a partir del usuario autenticado
+        (admin_payload['sub']); el cliente nunca lo envía.
+
+    RBAC:
+        Requiere rol admin_escuela autenticado mediante Bearer token.
+
+    Raises:
+        HTTPException(401): Si el token es inválido, expiró o fue revocado.
+        HTTPException(403): Si el rol no es admin_escuela, o si el usuario no está
+            vinculado a ninguna escuela.
+        HTTPException(404): Si no hay un año académico vigente configurado.
     """
     user_id = int(admin_payload["sub"])
     result = school_admin_service.get_available_classroom_categories(user_id=user_id)
@@ -107,20 +175,35 @@ def get_available_classroom_categories(
 # GET - Secciones disponibles para una categoría y nivel dados
 # ──────────────────────────────────────────────────────────
 
-@router.get("/categories/{category_id}/levels/{level}/sections", response_model=APIResponse[dict])
+@router.get("/categories/{category_id}/levels/{level}/sections", response_model=APIResponse[dict],
+    summary="Listar secciones de un nivel",
+    description=(
+        "Retorna las secciones existentes para una combinación de categoría y nivel, por "
+        "ejemplo A, B y C para Preescolar nivel 3. Con 'active=true' se restringe a los "
+        "salones del año académico vigente."
+    ),
+    responses=TENANT_DETAIL_RESPONSES,
+)
 def get_sections_by_category_and_level(
     category_id: int,
     level: int,
     active: bool = Query(False, description="Si es True, devuelve solo del año académico vigente"),
     admin_payload: dict = Depends(get_current_admin_escuela)
 ):
-    """
-    Retorna las secciones disponibles para una combinación específica de classroom_category (category_id) y level.
-    Si active=True, filtra para retornar solo las del año académico vigente.
+    """Lista las secciones disponibles para una categoría y nivel dados.
 
-    Ejemplo: category_id=1, level=3 → secciones A, B, C disponibles.
+    Multi-tenancy:
+        El 'school_id' se resuelve en el servidor a partir del usuario autenticado
+        (admin_payload['sub']); el cliente nunca lo envía.
 
-    Requiere JWT (admin_escuela).
+    RBAC:
+        Requiere rol admin_escuela autenticado mediante Bearer token.
+
+    Raises:
+        HTTPException(401): Si el token es inválido, expiró o fue revocado.
+        HTTPException(403): Si el rol no es admin_escuela, o si el usuario no está
+            vinculado a ninguna escuela.
+        HTTPException(404): Si no hay un año académico vigente configurado.
     """
     user_id = int(admin_payload["sub"])
     result = school_admin_service.get_sections_by_category_and_level(
