@@ -48,13 +48,29 @@ app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 # Include routers
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
-@app.get("/", response_class=HTMLResponse)
+# PUBLIC_ROUTE
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
 def root():
+    """Sirve la página de bienvenida de la API.
+
+    Returns:
+        str: HTML estático con los enlaces a la documentación interactiva.
+    """
     return ROOT_HTML
 
+# PUBLIC_ROUTE
 @app.get("/health")
 async def health_check():
-    """Verifica el estado de salud de la API y la conexión con la base de datos."""
+    """Verifica el estado de la API y su conexión con la base de datos.
+
+    Ejecuta una consulta mínima contra Supabase para distinguir "la API responde"
+    de "la API responde y la base de datos está accesible".
+
+    Returns:
+        dict: ``status``, ``database`` (``connected`` o el detalle del fallo),
+        ``version`` y ``app_name``. Responde 200 incluso con la base caída, para
+        que el chequeo distinga ambos estados en lugar de fallar.
+    """
     try:
         # Intenta una operación mínima para validar la conexión con Supabase
         supabase.table("system_status").select("*").limit(1).execute()
@@ -69,9 +85,16 @@ async def health_check():
         "app_name": app.title
     }
 
-@app.get("/health-visual", response_class=HTMLResponse)
+# PUBLIC_ROUTE
+@app.get("/health-visual", response_class=HTMLResponse, include_in_schema=False)
 async def health_visual():
-    """Retorna una vista visual del estado de salud del sistema."""
+    """Retorna el estado de salud del sistema como una página HTML legible.
+
+    Equivalente visual de ``/health``, pensado para revisión manual en el navegador.
+
+    Returns:
+        str: HTML con el estado de la API y de la base de datos.
+    """
     try:
         supabase.table("system_status").select("*").limit(1).execute()
         db_status = "Connected"

@@ -1,3 +1,5 @@
+"""Servicio del rol médico: perfil propio y foto de perfil."""
+
 import logging
 from typing import Optional
 from fastapi import HTTPException, status
@@ -110,10 +112,22 @@ class DoctorService:
     def upload_my_profile_photo(self, user_id: int, file_bytes: bytes, content_type: str) -> dict:
         """Sube la foto de perfil del médico a ImageKit y actualiza photo_url en la BD.
 
-        Delegates validation and the ImageKit/DB lifecycle to profile_photo_service.
+        Delega la validación y el ciclo de vida en ImageKit/BD a
+        ``profile_photo_service``, fijando la carpeta propia de los médicos.
+
+        Args:
+            user_id: ID del médico autenticado (claim ``sub`` del JWT).
+            file_bytes: Contenido binario de la imagen ya leído de la subida.
+            content_type: Content-Type declarado por el cliente; se contrasta con
+                los magic bytes del archivo.
 
         Returns:
             dict: Diccionario con la clave 'photo_url' y la URL generada.
+
+        Raises:
+            HTTPException: 400 si el archivo es inválido o supera el tamaño máximo.
+            HTTPException: 500 si ImageKit no está configurado o falla la BD.
+            HTTPException: 502 si falla la subida a ImageKit.
         """
         return profile_photo_service.upload_profile_photo(
             user_id=user_id,
@@ -125,10 +139,18 @@ class DoctorService:
     def delete_my_profile_photo(self, user_id: int) -> dict:
         """Elimina la foto de perfil del médico autenticado (BD e ImageKit).
 
+        Args:
+            user_id: ID del médico autenticado (claim ``sub`` del JWT).
+
         Returns:
             dict: Diccionario con la clave 'photo_url' en None.
+
+        Raises:
+            HTTPException: 400 si la actualización en la BD no afectó filas.
+            HTTPException: 500 si falla el acceso a la BD.
         """
         return profile_photo_service.delete_profile_photo(user_id=user_id)
 
 
+#: Instancia compartida del servicio, importada por los endpoints de médico.
 doctor_service = DoctorService()

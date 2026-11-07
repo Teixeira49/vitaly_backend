@@ -1,0 +1,7 @@
+{
+  "triggerMode": "manual",
+  "draftsDir": "docs/pull-requests/",
+  "reviewers": [],
+  "baseBranch": "development",
+  "productionBranch": "main"
+}

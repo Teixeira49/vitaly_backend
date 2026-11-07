@@ -1,18 +1,46 @@
+"""Gestión de eventos escolares para el rol administrador de escuela.
+
+El alcance se resuelve siempre en el servidor: el ``sch_admin_id`` y el
+``school_id`` salen del ``user_id`` autenticado, y un evento solo es accesible si
+tiene una participación registrada a nombre de ese administrador.
+"""
+
+import logging
+import re
+
 from fastapi import HTTPException
 from app.core.database import supabase
-from datetime import datetime, date
-from calendar import monthrange
+from app.services.event_schedule_policy import validate_lead_time
+from app.services.event_queries import apply_active_event_filter, month_window
+from datetime import datetime, date, timezone
+
+# Sufijo de zona horaria al final de un timestamp ISO 8601: ``Z``, ``+00:00``, ``-0400`` o ``+05``.
+_TZ_SUFFIX = re.compile(r"(Z|[+-]\d{2}(:?\d{2})?)$")
+logger = logging.getLogger(__name__)
 
 
 class SchoolAdminEventService:
+    """Operaciones de eventos escolares con aislamiento por escuela."""
 
     # ──────────────────────────────────────────────────────────
     # Helpers internos
     # ──────────────────────────────────────────────────────────
 
     def _get_admin_record(self, user_id: int) -> dict:
-        """Obtiene el registro completo del school_administrator vinculado al user_id.
-        Retorna un dict con sch_admin_id y school_id. Lanza 403 si no existe."""
+        """Resuelve el registro de ``school_administrator`` del usuario autenticado.
+
+        Es el punto donde se deriva el tenant: ningún método acepta el
+        ``school_id`` desde el cliente.
+
+        Args:
+            user_id: ID del usuario autenticado (claim ``sub`` del JWT).
+
+        Returns:
+            dict: ``{"sch_admin_id": int, "school_id": int}``.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+        """
         sa_res = (
             supabase.table("school_administrator")
             .select("sch_admin_id, school_id")
@@ -27,7 +55,14 @@ class SchoolAdminEventService:
         return sa_res.data[0]
 
     def _get_school_classroom_ids(self, school_id: int) -> list[int]:
-        """Retorna los IDs de todos los classrooms activos de una escuela."""
+        """Retorna los IDs de todos los salones activos de una escuela.
+
+        Args:
+            school_id: ID de la escuela, ya resuelto en el servidor.
+
+        Returns:
+            list[int]: IDs de los salones no eliminados. Lista vacía si no hay.
+        """
         res = (
             supabase.table("classroom")
             .select("id")
@@ -38,29 +73,66 @@ class SchoolAdminEventService:
         return [c["id"] for c in res.data] if res.data else []
 
     def _get_school_doctor_ids(self, school_id: int) -> list[int]:
-        """Retorna los doc_ids de los doctores asignados a la escuela."""
+        """Retorna los IDs de médicos disponibles para nuevas convocatorias.
+
+        Args:
+            school_id: ID de la escuela, ya resuelto en el servidor.
+
+        Returns:
+            list[int]: IDs de médicos de la escuela con cuenta activa y no
+            eliminada. Lista vacía si no hay ninguno disponible.
+        """
         res = (
             supabase.table("doctor_to_school")
-            .select("doctor_id")
+            .select("doctor_id, doctor!inner(user!inner(id))")
             .eq("school_id", school_id)
+            .eq("doctor.user.is_deleted", False)
+            .eq("doctor.user.is_active", True)
             .execute()
         )
         return [d["doctor_id"] for d in res.data] if res.data else []
 
-    def _base_event_filter(self):
-        """Condiciones base: no cancelado y no eliminado."""
-        return {"is_canceled": False, "is_deleted": False}
+    @staticmethod
+    def _with_utc_offset(value: str | None) -> str | None:
+        """Garantiza que un timestamp ISO 8601 lleve zona horaria.
+
+        Las ediciones nuevas guardan ``updated_at`` con offset, pero las filas
+        escritas antes de ese cambio quedaron sin él; si la columna devuelve uno
+        de esos valores, el cliente lo leería como hora local.
+
+        Args:
+            value: Timestamp tal como lo devuelve la base de datos, o ``None``.
+
+        Returns:
+            str | None: El mismo valor si ya trae offset, con ``+00:00`` añadido si no,
+            o ``None`` si no hay valor.
+        """
+        if not value:
+            return None
+        # Se mira solo la parte de la hora para no confundir el día (``-05``) con un offset
+        return value if _TZ_SUFFIX.search(value[10:]) else f"{value}+00:00"
 
     def _validate_event_ownership(self, event_id: int, sch_admin_id: int) -> dict:
-        """Verifica que el evento existe, no está cancelado ni eliminado,
-        y que fue creado por un admin de la misma escuela.
-        Retorna el registro del evento."""
+        """Comprueba que un evento existe y pertenece al administrador indicado.
+
+        La pertenencia es indirecta: se exige que el evento tenga al menos una
+        participación registrada a nombre de ``sch_admin_id``.
+
+        Args:
+            event_id: ID del evento a validar.
+            sch_admin_id: ID del administrador escolar resuelto en el servidor.
+
+        Returns:
+            dict: Fila completa del evento.
+
+        Raises:
+            HTTPException: 404 si no existe un evento activo con ese ID.
+            HTTPException: 403 si el evento pertenece a otra escuela.
+        """
         event_res = (
-            supabase.table("event")
-            .select("*")
-            .eq("id", event_id)
-            .eq("is_canceled", False)
-            .eq("is_deleted", False)
+            apply_active_event_filter(
+                supabase.table("event").select("*").eq("id", event_id)
+            )
             .execute()
         )
         if not event_res.data:
@@ -92,9 +164,34 @@ class SchoolAdminEventService:
     # ──────────────────────────────────────────────────────────
 
     def create_event(self, user_id: int, payload) -> dict:
+        """Crea un evento y sus participaciones de salones y médicos.
+
+        Valida que el inicio respete la anticipación mínima configurada y que
+        todos los salones y médicos indicados pertenezcan a la escuela del
+        administrador antes de insertar nada.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            payload: :class:`~app.schemas.event.EventCreate` con los datos del
+                evento y los IDs de salones y médicos convocados.
+
+        Returns:
+            dict: ``event_id``, ``title``, ``classrooms_linked`` y ``doctors_linked``.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+            FieldValidationError: 422 si el inicio no respeta la anticipación
+                mínima vigente (ver :mod:`app.services.event_schedule_policy`).
+            HTTPException: 400 si algún salón o médico no pertenece a la escuela.
+            HTTPException: 500 si la inserción del evento no devuelve la fila.
+        """
         admin = self._get_admin_record(user_id)
         sch_admin_id = admin["sch_admin_id"]
         school_id = admin["school_id"]
+
+        # Anticipación mínima: se valida antes de cualquier escritura para que un
+        # horario rechazado no deje evento ni participaciones creados.
+        validate_lead_time(payload.init_time)
 
         # Validar que los classrooms pertenecen a la escuela
         valid_classroom_ids = self._get_school_classroom_ids(school_id)
@@ -157,6 +254,23 @@ class SchoolAdminEventService:
     # ──────────────────────────────────────────────────────────
 
     def get_events(self, user_id: int, page: int, size: int) -> dict:
+        """Lista de forma paginada los eventos de la escuela del administrador.
+
+        Solo incluye eventos vigentes (ni cancelados ni eliminados), ordenados del
+        más reciente al más antiguo.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            page: Número de página, comenzando en 1.
+            size: Cantidad de eventos por página.
+
+        Returns:
+            dict: ``{"data": [...], "total": int, "page": int, "size": int}``. Si el
+            administrador no tiene eventos, ``data`` viene vacío y ``total`` en 0.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+        """
         admin = self._get_admin_record(user_id)
         sch_admin_id = admin["sch_admin_id"]
 
@@ -175,11 +289,9 @@ class SchoolAdminEventService:
 
         # Contar total de eventos activos
         count_res = (
-            supabase.table("event")
-            .select("id", count="exact")
-            .in_("id", event_ids)
-            .eq("is_canceled", False)
-            .eq("is_deleted", False)
+            apply_active_event_filter(
+                supabase.table("event").select("id", count="exact").in_("id", event_ids)
+            )
             .execute()
         )
         total = count_res.count or 0
@@ -189,11 +301,11 @@ class SchoolAdminEventService:
         # Paginación
         offset = (page - 1) * size
         events_res = (
-            supabase.table("event")
-            .select("id, title, description, init_time, ent_time, created_at")
-            .in_("id", event_ids)
-            .eq("is_canceled", False)
-            .eq("is_deleted", False)
+            apply_active_event_filter(
+                supabase.table("event")
+                .select("id, title, description, init_time, ent_time, created_at")
+                .in_("id", event_ids)
+            )
             .order("init_time", desc=True)
             .range(offset, offset + size - 1)
             .execute()
@@ -211,13 +323,28 @@ class SchoolAdminEventService:
     # ──────────────────────────────────────────────────────────
 
     def get_events_by_month(self, user_id: int, year: int, month: int) -> dict:
+        """Lista los eventos del administrador que caen dentro de un mes concreto.
+
+        Pensado para la vista de calendario: devuelve el mes completo sin paginar,
+        ordenado cronológicamente.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            year: Año del período a consultar, ej. 2026.
+            month: Mes del período a consultar, de 1 a 12.
+
+        Returns:
+            dict: ``{"data": [...], "year": int, "month": int, "total": int}``.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela.
+            ValueError: Si ``month`` queda fuera del rango 1-12.
+        """
         admin = self._get_admin_record(user_id)
         sch_admin_id = admin["sch_admin_id"]
 
-        # Calcular rango del mes
-        _, last_day = monthrange(year, month)
-        start_date = f"{year}-{month:02d}-01T00:00:00+00:00"
-        end_date = f"{year}-{month:02d}-{last_day}T23:59:59+00:00"
+        # Calcular rango del mes (ventana semiabierta [inicio, siguiente))
+        start_date, next_month_start = month_window(year, month)
 
         # Obtener IDs de eventos del admin
         part_res = (
@@ -234,13 +361,13 @@ class SchoolAdminEventService:
 
         # Filtrar eventos por rango de fechas
         events_res = (
-            supabase.table("event")
-            .select("id, title, description, init_time, ent_time, created_at")
-            .in_("id", event_ids)
-            .eq("is_canceled", False)
-            .eq("is_deleted", False)
+            apply_active_event_filter(
+                supabase.table("event")
+                .select("id, title, description, init_time, ent_time, created_at")
+                .in_("id", event_ids)
+            )
             .gte("init_time", start_date)
-            .lte("init_time", end_date)
+            .lt("init_time", next_month_start)
             .order("init_time", desc=False)
             .execute()
         )
@@ -256,7 +383,48 @@ class SchoolAdminEventService:
     # GET - Detalle de un Evento
     # ──────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _classroom_label(classroom: dict, category_name: str | None) -> str:
+        """Construye una etiqueta sin exponer identificadores de categoría.
+
+        Args:
+            classroom: Fila con nivel y sección del salón.
+            category_name: Nombre resuelto del catálogo, o None si falta.
+
+        Returns:
+            str: Grado, nivel o año, categoría y sección cuando esté presente.
+        """
+        category = (category_name or "").strip().lower()
+        unit = {"primaria": "grado", "preescolar": "nivel", "bachillerato": "año"}.get(category, "nivel")
+        ordinals = {1: "Primer", 2: "Segundo", 3: "Tercer", 4: "Cuarto", 5: "Quinto", 6: "Sexto"}
+        level = classroom.get("level")
+        if level in ordinals:
+            label = f"{ordinals[level]} {unit} {category}".strip()
+        elif level is not None:
+            label = f"{unit.capitalize()} {level} {category}".strip()
+        else:
+            label = category.capitalize()
+        if not category:
+            label = " · ".join(filter(None, [label, "Categoría no disponible"]))
+        section = str(classroom.get("section") or "").strip()
+        return f"{label} · Sección {section}" if section else label
+
     def get_event_detail(self, user_id: int, event_id: int) -> dict:
+        """Devuelve un evento con el detalle de sus salones y médicos convocados.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            event_id: ID del evento a consultar.
+
+        Returns:
+            dict: Datos del evento junto con sus participaciones resueltas.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela, o
+                si el evento pertenece a otra escuela.
+            HTTPException: 404 si no existe un evento activo con ese ID.
+            HTTPException: 500 si falla la consulta de salones o categorías.
+        """
         admin = self._get_admin_record(user_id)
         sch_admin_id = admin["sch_admin_id"]
 
@@ -278,16 +446,32 @@ class SchoolAdminEventService:
         # Obtener info de salones
         classrooms_info = []
         if classroom_ids:
-            cr_res = (
-                supabase.table("classroom")
-                .select("id, category, level, section")
-                .in_("id", classroom_ids)
-                .execute()
-            )
+            try:
+                cr_res = (
+                    supabase.table("classroom")
+                    .select("id, category, level, section")
+                    .eq("school_id", admin["school_id"])
+                    .in_("id", classroom_ids)
+                    .execute()
+                )
+                category_ids = sorted({c["category"] for c in cr_res.data if c.get("category") is not None})
+                categories = {}
+                if category_ids:
+                    # Catálogo global: una consulta por lote, sin filtro de escuela.
+                    category_res = (
+                        supabase.table("classroom_category")
+                        .select("id, classroom_type_name")
+                        .in_("id", category_ids)
+                        .execute()
+                    )
+                    categories = {c["id"]: c.get("classroom_type_name") for c in category_res.data}
+            except Exception as exc:
+                logger.exception("Error al consultar los salones o categorías del evento")
+                raise HTTPException(status_code=500, detail="No se pudieron obtener los salones del evento.") from exc
             classrooms_info = [
                 {
                     "id": c["id"],
-                    "label": f"{c.get('category', '')} {c.get('level', '')} {c.get('section', '')}".strip()
+                    "label": self._classroom_label(c, categories.get(c.get("category"))),
                 }
                 for c in cr_res.data
             ] if cr_res.data else []
@@ -358,6 +542,7 @@ class SchoolAdminEventService:
                 "init_time": event["init_time"],
                 "ent_time": event["ent_time"],
                 "created_at": event.get("created_at"),
+                "updated_at": self._with_utc_offset(event.get("updated_at")),
             },
             "classrooms": classrooms_info,
             "doctors": doctors_info,
@@ -369,6 +554,23 @@ class SchoolAdminEventService:
     # ──────────────────────────────────────────────────────────
 
     def cancel_event(self, user_id: int, event_id: int) -> dict:
+        """Cancela un evento y, en cascada, todas sus participaciones.
+
+        Es una cancelación lógica (``is_canceled=True``): el evento deja de
+        aparecer en los listados pero su registro se conserva.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            event_id: ID del evento a cancelar.
+
+        Returns:
+            dict: ``{"event_id": int, "status": "canceled"}``.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela, o
+                si el evento pertenece a otra escuela.
+            HTTPException: 404 si no existe un evento activo con ese ID.
+        """
         admin = self._get_admin_record(user_id)
         sch_admin_id = admin["sch_admin_id"]
 
@@ -377,13 +579,13 @@ class SchoolAdminEventService:
         # Cancelar el evento
         supabase.table("event").update({
             "is_canceled": True,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", event_id).execute()
 
         # Cancelar las participaciones asociadas
         supabase.table("event_participation").update({
             "is_canceled": True,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id_event", event_id).execute()
 
         return {"event_id": event_id, "status": "canceled"}
@@ -393,10 +595,42 @@ class SchoolAdminEventService:
     # ──────────────────────────────────────────────────────────
 
     def update_event(self, user_id: int, event_id: int, payload: dict) -> dict:
+        """Actualiza los datos base de un evento, sin tocar sus participaciones.
+
+        Solo aplica los campos enviados de entre ``title``, ``description``,
+        ``init_time`` y ``ent_time``, y revalida que la fecha de fin siga siendo
+        posterior a la de inicio con los valores resultantes.
+
+        Reprogramar cuenta como programar: si el cuerpo trae ``init_time``, el
+        nuevo inicio debe respetar la anticipación mínima vigente. Las ediciones
+        que no tocan el inicio (ej. corregir el título de un evento ya ocurrido)
+        no pasan por esa validación.
+
+        Args:
+            user_id: ID del administrador autenticado (claim ``sub`` del JWT).
+            event_id: ID del evento a actualizar.
+            payload: Campos a modificar. Los omitidos conservan su valor actual.
+
+        Returns:
+            dict: Fila del evento ya actualizada.
+
+        Raises:
+            HTTPException: 403 si el usuario no está vinculado a ninguna escuela, o
+                si el evento pertenece a otra escuela.
+            HTTPException: 404 si no existe un evento activo con ese ID.
+            FieldValidationError: 422 si se envía un ``init_time`` que no respeta
+                la anticipación mínima vigente.
+            HTTPException: 400 si no se envió ningún campo válido, o si la fecha de
+                finalización no es posterior a la de inicio.
+        """
         admin = self._get_admin_record(user_id)
         sch_admin_id = admin["sch_admin_id"]
 
         event = self._validate_event_ownership(event_id, sch_admin_id)
+
+        # Solo se revalida la anticipación cuando se reprograma el inicio.
+        if payload.get("init_time") is not None:
+            validate_lead_time(payload["init_time"])
 
         # Construir campos a actualizar (solo los que se enviaron)
         update_data = {}
@@ -424,7 +658,7 @@ class SchoolAdminEventService:
                 detail="La fecha de finalización debe ser posterior a la de inicio."
             )
 
-        update_data["updated_at"] = datetime.utcnow().isoformat()
+        update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
 
         result = (
             supabase.table("event")
@@ -436,4 +670,5 @@ class SchoolAdminEventService:
         return result.data[0] if result.data else {"event_id": event_id, "status": "updated"}
 
 
+#: Instancia compartida del servicio, importada por los endpoints de eventos.
 school_admin_event_service = SchoolAdminEventService()
